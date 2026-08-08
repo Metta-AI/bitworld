@@ -218,6 +218,46 @@ client/global_client.html?address=ws://localhost:8080/global
 Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
 Reconnect is off by default.
 
+## Shared Sprite Renderer
+
+The HTML global client delegates all Sprite v1 parsing, state, and canvas
+composition to a shared renderer module:
+
+```text
+client/sprite_renderer.js
+```
+
+It is a classic script with no Window or DOM dependencies, so it runs both on
+a page (`<script src="sprite_renderer.js">` with an HTMLCanvasElement) and in
+a Dedicated Worker (`importScripts` with a transferred OffscreenCanvas). This
+is the module downstream coworlds should consume for static replay viewers
+instead of forking the renderer. It is embedded and served by
+`src/bitworld/client.nim` at `/client/sprite_renderer.js` and
+`/clients/sprite_renderer.js`, next to `snappyjs.min.js`, which must be
+loaded into the same scope first.
+
+`BitworldSpriteRenderer.create(config)` builds a full renderer
+(`ingest`/`resize`/`handleInput`/`setDebug`/`dispose` with
+`onPacket`/`onDraw`/`onDebug`/`onError` callbacks). The module also exports
+the protocol building blocks — `parsePackets`, byte codecs, sprite decoders,
+`putSpritePixel`, and input-packet encoders — for hosts that keep their own
+composition policy.
+
+Tests:
+
+```text
+node tests/test_sprite_renderer.mjs
+```
+
+runs the protocol and lifecycle tests in plain Node, and
+
+```text
+tools/sprite_renderer_harness.html
+```
+
+(served from the repo root, e.g. `python3 -m http.server`) renders the same
+packet stream in a Window and in a Worker and requires pixel-identical output.
+
 ## Reward Client
 
 The native reward client lives at:

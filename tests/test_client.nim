@@ -15,6 +15,8 @@ proc testCanonicalCoworldClientRoutes() =
   doAssert coworldClientStaticRoute(CoworldRewardClientRoute) == RewardClientRoute
   doAssert coworldClientStaticRoute(CoworldSnappyClientRoute) == SnappyClientRoute
   doAssert coworldClientStaticRoute(CoworldQrcodeClientRoute) == QrcodeClientRoute
+  doAssert coworldClientStaticRoute(CoworldSpriteRendererClientRoute) ==
+    SpriteRendererClientRoute
   doAssert coworldClientStaticRoute(ReplayClientRoute) == GlobalClientRoute
   doAssert coworldClientStaticRoute("/client/replay.html") == "/client/replay.html"
   doAssert clientStaticPath("/client/replay.html") == ""
@@ -30,9 +32,15 @@ proc testClientStaticPaths() =
   assertEndsWith(clientStaticPath(CoworldRewardClientRoute), "client" / RewardClientHtml)
   assertEndsWith(clientStaticPath(CoworldSnappyClientRoute), "client" / SnappyClientJs)
   assertEndsWith(clientStaticPath(CoworldQrcodeClientRoute), "client" / QrcodeClientJs)
+  assertEndsWith(
+    clientStaticPath(CoworldSpriteRendererClientRoute),
+    "client" / SpriteRendererClientJs
+  )
   doAssert clientStaticContentType(CoworldReplayClientRoute) == "text/html; charset=utf-8"
   doAssert clientStaticContentType(CoworldSnappyClientRoute) == "application/javascript; charset=utf-8"
   doAssert clientStaticContentType(CoworldQrcodeClientRoute) == "application/javascript; charset=utf-8"
+  doAssert clientStaticContentType(CoworldSpriteRendererClientRoute) ==
+    "application/javascript; charset=utf-8"
 
 proc testReplayClientPreservesUri() =
   ## Tests that the shared replay client forwards Coworld replay URIs.
@@ -40,26 +48,37 @@ proc testReplayClientPreservesUri() =
   let html = readClientHtml(CoworldReplayClientRoute)
   doAssert """["name","slot","token","uri"]""" in html
 
-proc testGlobalClientFullScreenLayers() =
-  ## Tests that the shared global/replay client understands full screen layers.
-  echo "Testing global client full screen layers"
+proc testGlobalClientUsesSharedRenderer() =
+  ## Tests that the shared global/replay client delegates rendering to the
+  ## shared Sprite v1 renderer module.
+  echo "Testing global client shared renderer wiring"
   let html = readClientHtml(CoworldReplayClientRoute)
-  doAssert "FullScreenLayerType=9" in html
-  doAssert "function isFullScreenLayer" in html
-  doAssert "function layerHasObjects" in html
-  doAssert "if(isFullScreenLayer(layer))return 1" in html
-  doAssert "Math.max(.000001,Math.min" in html
-  doAssert "isFullScreenLayer(layer)||!layerHasObjects(layer)" in html
-  doAssert "layerDrawRank" in html
+  doAssert "<script src=\"sprite_renderer.js\"></script>" in html
+  doAssert "BitworldSpriteRenderer.create(" in html
+  doAssert "function zoomMapAt" notin html
+  doAssert "function putSpritePixel" notin html
+  doAssert "function parse" notin html
 
-proc testGlobalClientWheelZoomTargetsMap() =
+proc testSharedRendererFullScreenLayers() =
+  ## Tests that the shared renderer understands full screen layers.
+  echo "Testing shared renderer full screen layers"
+  let renderer = clientStaticBody(CoworldSpriteRendererClientRoute)
+  doAssert "FullScreenLayerType = 9" in renderer
+  doAssert "function isFullScreenLayer" in renderer
+  doAssert "function layerHasObjects" in renderer
+  doAssert "if (isFullScreenLayer(layer)) return 1" in renderer
+  doAssert "Math.max(0.000001, Math.min(" in renderer
+  doAssert "!isFullScreenLayer(layer) || !layerHasObjects(layer)" in renderer
+  doAssert "layerDrawRank" in renderer
+
+proc testSharedRendererWheelZoomTargetsMap() =
   ## Tests that UI overlays do not block hosted replay map zoom.
-  echo "Testing global client wheel zoom target"
+  echo "Testing shared renderer wheel zoom target"
+  let renderer = clientStaticBody(CoworldSpriteRendererClientRoute)
+  doAssert "function zoomMapAt(clientX, clientY, deltaY)" in renderer
+  doAssert "const layer = mapLayer();\n      if (!layer) return;" in renderer
   let html = readClientHtml(CoworldReplayClientRoute)
-  doAssert "function zoomMapAt(clientX,clientY,deltaY)" in html
-  doAssert "const layer=mapLayer();\n  if(!layer)return;" in html
-  doAssert "zoomMapAt(event.clientX,event.clientY,event.deltaY);" in html
-  doAssert "addEventListener(\"wheel\",event=>{\n  event.preventDefault();\n  const point=mousePoint(event);" notin html
+  doAssert "action:\"wheel\"" in html
 
 proc testPlayerClientSpeaksSpriteProtocol() =
   ## Tests the shared player client covers the sprite protocol used by bots.
@@ -90,14 +109,17 @@ proc testEmbeddedClientBodies() =
   doAssert clientStaticBody(RewardClientRoute).startsWith("<!doctype html>")
   doAssert clientStaticBody(SnappyClientRoute).len > 0
   doAssert clientStaticBody(QrcodeClientRoute).len > 0
+  doAssert clientStaticBody(SpriteRendererClientRoute).len > 0
+  doAssert "BitworldSpriteRenderer" in clientStaticBody(SpriteRendererClientRoute)
   doAssert clientStaticBody("/clients/player").startsWith("<!doctype html>")
   doAssert clientStaticBody("/clients/replay").startsWith("<!doctype html>")
 
 testCanonicalCoworldClientRoutes()
 testClientStaticPaths()
 testReplayClientPreservesUri()
-testGlobalClientFullScreenLayers()
-testGlobalClientWheelZoomTargetsMap()
+testGlobalClientUsesSharedRenderer()
+testSharedRendererFullScreenLayers()
+testSharedRendererWheelZoomTargetsMap()
 testPlayerClientSpeaksSpriteProtocol()
 testEmbeddedClientBodies()
 echo "All tests passed"

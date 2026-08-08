@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sprite Renderer Harness</title>
+<style>
+body{font:14px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#111;color:#e8e8e8;padding:16px}
+canvas{border:1px solid #444;image-rendering:pixelated;width:256px;height:256px}
+#result{white-space:pre-wrap;margin-top:12px}
+.pass{color:#4e4}
+.fail{color:#e44}
+</style>
+</head>
+<body>
+<h1>Sprite v1 renderer: Window vs Worker</h1>
+<div>
+  <canvas id="windowCanvas" width="1" height="1"></canvas>
+  <canvas id="workerCanvas" width="1" height="1"></canvas>
+</div>
+<div id="result">running...</div>
+<script src="/client/snappyjs.min.js"></script>
+<script src="/client/sprite_renderer.js"></script>
+<script>
+// Drives the shared renderer through an identical packet stream and input
+// script in the page (HTMLCanvasElement) and in a Dedicated Worker
+// (transferred OffscreenCanvas), then requires pixel-identical output and
+// identical outgoing input packets from both contexts.
+"use strict";
+
+const Size = 256;
+
+function u16(value){return [value & 255, (value >> 8) & 255]}
+function u32(value){
+  return [value & 255, (value >> 8) & 255, (value >> 16) & 255, (value >> 24) & 255];
+}
+function utf8(text){return [...new TextEncoder().encode(text)]}
+
+function spritePacket(id, width, height, rgba, label){
+  const compressed = [...SnappyJS.compress(Uint8Array.from(rgba))];
+  return [
+    0x01, ...u16(id), ...u16(width), ...u16(height),
+    ...u32(compressed.length), ...compressed,
+    ...u16(utf8(label).length), ...utf8(label)
+  ];
+}
+
+function fill(count, r, g, b, a){
+  const pixels = [];
+  for (let index = 0; index < count; index++) pixels.push(r, g, b, a);
+  return pixels;
+}
+
+// One map layer with two overlapping sprites (opaque + 50% alpha) plus an
+// anchored UI layer, exercising composition, blending, and UI placement.
+const stream = Uint8Array.from([
+  [0x06, 0, 0, 1],
+  [0x05, 0, ...u16(8), ...u16(8)],
+  [0x06, 1, 3, 2],
+  [0x05, 1, ...u16(4), ...u16(2)],
+  spritePacket(1, 4, 4, fill(16, 255, 0, 0, 255), "red"),
+  spritePacket(2, 4, 4, fill(16, 0, 0, 255, 128), "blue"),
+  spritePacket(3, 2, 2, fill(4, 0, 255, 0, 255), "green"),
+  [0x02, ...u16(1), ...u16(1), ...u16(1), ...u16(0), 0, ...u16(1)],
+  [0x02, ...u16(2), ...u16(3), ...u16(3), ...u16(1), 0, ...u16(2)],
+  [0x02, ...u16(3), ...u16(1), ...u16(0), ...u16(0), 1, ...u16(3)],
+  [0x07, ...u16(9)]
+].flat());
+
+const inputScript = [
+  { action: "pointerdown", x: 128, y: 128 },
+  { action: "pointermove", x: 140, y: 140 },
+  { action: "pointerup", x: 140, y: 140 },
+  { action: "wheel", x: 64, y: 64, deltaY: -240 },
+  { action: "pointermove", x: 64, y: 64 },
+  { action: "dblclick", x: 64, y: 64 }
+];
+
+function checksum(data){
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < data.length; index++) {
+    hash = ((hash ^ data[index]) * 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function nextFrame(){
+  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}
+
+async function runWindowSide(){
+  const canvas = document.getElementById("windowCanvas");
+  const packets = [];
+  const renderer = BitworldSpriteRenderer.create({
+    canvas,
+    width: Size,
+    height: Size,
+    dpr: 1,
+    onPacket: packet => packets.push([...packet])
+  });
+  renderer.ingest(stream);
+  await nextFrame();
+  await nextFrame();
+  const ctx = canvas.getContext("2d");
+  const first = checksum(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+  for (const message of inputScript) renderer.handleInput(message);
+  await nextFrame();
+  await nextFrame();
+  const second = checksum(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+  renderer.resize(Size / 2, Size / 2, 2);
+  await nextFrame();
+  await nextFrame();
+  const third = checksum(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+  return { checksums: [first, second, third], packets };
+}
+
+function runWorkerSide(){
+  return new Promise((resolve, reject) => {
+    const worker = new Worker("/tools/sprite_renderer_harness_worker.js");
+    const canvas = document.getElementById("workerCanvas");
+    canvas.width = Size;
+    canvas.height = Size;
+    const offscreen = canvas.transferControlToOffscreen();
+    worker.onmessage = event => {
+      if (event.data.error) reject(new Error(event.data.error));
+      else resolve(event.data);
+      worker.terminate();
+    };
+    worker.onerror = event => reject(new Error(event.message));
+    worker.postMessage(
+      { canvas: offscreen, size: Size, stream, inputScript },
+      [offscreen]
+    );
+  });
+}
+
+async function run(){
+  const result = document.getElementById("result");
+  try {
+    const [windowSide, workerSide] = await Promise.all([
+      runWindowSide(), runWorkerSide()
+    ]);
+    const checks = [
+      ["render checksum", windowSide.checksums[0], workerSide.checksums[0]],
+      ["post-input checksum", windowSide.checksums[1], workerSide.checksums[1]],
+      ["post-resize checksum", windowSide.checksums[2], workerSide.checksums[2]],
+      ["input packets", JSON.stringify(windowSide.packets), JSON.stringify(workerSide.packets)],
+      ["non-blank render", true, workerSide.checksums[0] !== checksum(new Uint8Array(Size * Size * 4))]
+    ];
+    const failures = checks.filter(([, a, b]) => a !== b);
+    const lines = checks.map(([name, a, b]) =>
+      (a === b ? "PASS " : "FAIL ") + name + ": " + a + (a === b ? "" : " != " + b)
+    );
+    lines.push("window packets: " + windowSide.packets.length);
+    result.textContent = lines.join("\n");
+    result.className = failures.length ? "fail" : "pass";
+    document.title = failures.length ? "HARNESS FAIL" : "HARNESS PASS";
+    document.documentElement.dataset.harness = failures.length ? "fail" : "pass";
+  } catch (error) {
+    result.textContent = "FAIL " + error.message;
+    result.className = "fail";
+    document.title = "HARNESS FAIL";
+    document.documentElement.dataset.harness = "fail";
+  }
+}
+
+run();
+</script>
+</body>
+</html>

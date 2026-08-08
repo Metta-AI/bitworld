@@ -3987,6 +3987,8 @@ proc clientAsset(path: string): string =
     clientRoot() / "snappyjs.min.js"
   of "/client/qrcode.min.js":
     clientRoot() / "qrcode.min.js"
+  of "/client/sprite_renderer.js":
+    clientRoot() / "sprite_renderer.js"
   else:
     ""
 

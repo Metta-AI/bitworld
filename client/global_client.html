@@ -161,15 +161,19 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   <div id="debugSprites"></div>
 </div>
 <script src="snappyjs.min.js"></script>
+<script src="sprite_renderer.js"></script>
 <script>
-const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
+// Window host for the shared Sprite v1 renderer (sprite_renderer.js). This
+// page owns transport (WebSocket + reconnect), keyboard/player input, and
+// the status/entry/debug DOM chrome; the renderer owns parsing, state, and
+// canvas composition.
+const canvas=document.getElementById("c");
 const status=document.getElementById("status");
 const entry=document.getElementById("entry");
 const debugPanel=document.getElementById("debugPanel");
 const debugDown=document.getElementById("debugDown");
 const debugUp=document.getElementById("debugUp");
 const debugSprites=document.getElementById("debugSprites");
-const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
 function websocketPathForClientPage(path){
   const mappings=[
@@ -221,20 +225,12 @@ function addressPath(){
 }
 const playerMode=url.searchParams.get("player")==="1"||
   addressPath()==="/player";
-const ZoomableFlag=1,UiFlag=2,MapLayerType=0,FullScreenLayerType=9,MaxUiZoom=3;
-const MaxUiZoomFitPadding=1.5;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
-const DebugUpdateFlashMs=900;
-let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=null,reconnectTimer=0;
-let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
-let draggingMap=false,dragX=0,dragY=0;
 let heldButtons=0,typing=false,textBuffer="";
-let debugOpen=false,debugSpritesDirty=true,debugSpriteTimer=0;
-let debugUpdateTimer=0;
+let debugOpen=false;
 let debugBytesDown=0,debugBytesUp=0;
-ctx.imageSmoothingEnabled=false;
 
 function formatBytes(value){
   const units=["B","KB","MB","GB"];
@@ -251,155 +247,9 @@ function updateDebugCounters(){
   debugUp.textContent=formatBytes(debugBytesUp);
 }
 
-function previewSprite(canvas,sprite){
-  const size=64;
-  canvas.width=size;
-  canvas.height=size;
-  const previewCtx=canvas.getContext("2d");
-  const image=previewCtx.createImageData(size,size);
-  for(let y=0;y<size;y++){
-    for(let x=0;x<size;x++){
-      const offset=(y*size+x)*4;
-      const shade=((Math.floor(x/8)+Math.floor(y/8))&1)?44:28;
-      image.data[offset]=shade;
-      image.data[offset+1]=shade;
-      image.data[offset+2]=shade;
-      image.data[offset+3]=255;
-    }
-  }
-  const scale=Math.min(size/sprite.width,size/sprite.height);
-  const drawWidth=Math.max(1,Math.floor(sprite.width*scale));
-  const drawHeight=Math.max(1,Math.floor(sprite.height*scale));
-  const baseX=Math.floor((size-drawWidth)/2);
-  const baseY=Math.floor((size-drawHeight)/2);
-  for(let y=0;y<drawHeight;y++){
-    for(let x=0;x<drawWidth;x++){
-      const srcX=Math.min(sprite.width-1,Math.floor(x/scale));
-      const srcY=Math.min(sprite.height-1,Math.floor(y/scale));
-      const srcOffset=(srcY*sprite.width+srcX)*4;
-      const alpha=sprite.pixels[srcOffset+3]/255;
-      if(alpha===0)continue;
-      const outOffset=((baseY+y)*size+baseX+x)*4;
-      image.data[outOffset]=Math.round(
-        sprite.pixels[srcOffset]*alpha+image.data[outOffset]*(1-alpha)
-      );
-      image.data[outOffset+1]=Math.round(
-        sprite.pixels[srcOffset+1]*alpha+image.data[outOffset+1]*(1-alpha)
-      );
-      image.data[outOffset+2]=Math.round(
-        sprite.pixels[srcOffset+2]*alpha+image.data[outOffset+2]*(1-alpha)
-      );
-    }
-  }
-  previewCtx.putImageData(image,0,0);
-}
-
-function debugSpriteColor(id){
-  const hue=(id*137.508)%360;
-  return "hsl("+hue+",90%,55%)";
-}
-
-function spriteJustUpdated(sprite){
-  return sprite.updatedUntil&&performance.now()<sprite.updatedUntil;
-}
-
-function drawDebugSpriteBounds(layer,pos,object,sprite){
-  const
-    scaleX=pos.w/layer.width,
-    scaleY=pos.h/layer.height,
-    x=pos.x+object.x*scaleX,
-    y=pos.y+object.y*scaleY,
-    w=sprite.width*scaleX,
-    h=sprite.height*scaleY,
-    color=debugSpriteColor(object.spriteId),
-    label=sprite.label||("sprite "+object.spriteId),
-    bx=Math.round(x)+.5,
-    by=Math.round(y)+.5,
-    bw=Math.max(1,Math.round(w)),
-    bh=Math.max(1,Math.round(h));
-  ctx.save();
-  ctx.lineWidth=1;
-  if(spriteJustUpdated(sprite)){
-    ctx.strokeStyle="#fff";
-    ctx.strokeRect(bx-1,by-1,bw+2,bh+2);
-  }
-  ctx.strokeStyle=color;
-  ctx.strokeRect(bx,by,bw,bh);
-  ctx.font="8px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
-  ctx.textBaseline="top";
-  const
-    textWidth=Math.ceil(ctx.measureText(label).width),
-    labelX=Math.max(0,Math.min(innerWidth-textWidth-4,Math.round(x))),
-    labelY=Math.max(0,Math.min(innerHeight-10,Math.round(y)-9));
-  ctx.fillStyle=color;
-  ctx.fillRect(labelX,labelY,textWidth+4,9);
-  ctx.fillStyle="#000";
-  ctx.fillText(label,labelX+2,labelY+1);
-  ctx.restore();
-}
-
-function refreshDebugSprites(){
-  debugSpriteTimer=0;
-  if(!debugOpen||!debugSpritesDirty)return;
-  debugSpritesDirty=false;
-  debugSprites.textContent="";
-  const ids=[...sprites.keys()].sort((a,b)=>a-b);
-  for(const id of ids){
-    const sprite=sprites.get(id);
-    const row=document.createElement("div");
-    const label=document.createElement("div");
-    const preview=document.createElement("canvas");
-    const meta=document.createElement("div");
-    const text=document.createElement("div");
-    const size=document.createElement("div");
-    const traffic=document.createElement("div");
-    row.className="debugSprite";
-    row.classList.toggle("updated",!!spriteJustUpdated(sprite));
-    label.className="debugSpriteId";
-    meta.className="debugSpriteMeta";
-    text.className="debugSpriteText";
-    size.className="debugSpriteSize";
-    traffic.className="debugSpriteTraffic";
-    label.textContent="#"+id;
-    text.textContent=sprite.label||"(no label)";
-    size.textContent=sprite.width+"x"+sprite.height;
-    traffic.textContent=formatBytes(sprite.bytesDown||0)+" / "+
-      (sprite.updates||0)+"x";
-    previewSprite(preview,sprite);
-    label.append(size);
-    label.append(traffic);
-    meta.append(text);
-    row.append(label,preview,meta);
-    debugSprites.append(row);
-  }
-}
-
-function scheduleDebugSprites(){
-  debugSpritesDirty=true;
-  if(!debugOpen||debugSpriteTimer)return;
-  debugSpriteTimer=setTimeout(refreshDebugSprites,120);
-}
-
-function scheduleDebugUpdateClear(){
-  if(debugUpdateTimer)clearTimeout(debugUpdateTimer);
-  debugUpdateTimer=setTimeout(()=>{
-    debugUpdateTimer=0;
-    if(!debugOpen)return;
-    debugSpritesDirty=true;
-    refreshDebugSprites();
-    draw();
-  },DebugUpdateFlashMs+40);
-}
-
-function toggleDebugPanel(){
-  debugOpen=!debugOpen;
-  debugPanel.classList.toggle("hidden",!debugOpen);
-  updateDebugCounters();
-  if(debugOpen){
-    debugSpritesDirty=true;
-    refreshDebugSprites();
-  }
-  draw();
+function setStatus(text){
+  status.textContent=text;
+  status.classList.toggle("hidden",!text);
 }
 
 function sendPacket(bytes){
@@ -409,156 +259,73 @@ function sendPacket(bytes){
   socket.send(bytes);
 }
 
-function setStatus(text){
-  status.textContent=text;
-  status.classList.toggle("hidden",!text);
-}
-
-function applyView(){
-  if(canvas.width!==innerWidth)canvas.width=innerWidth;
-  if(canvas.height!==innerHeight)canvas.height=innerHeight;
+function applyCanvasStyle(){
   canvas.style.width=innerWidth+"px";
   canvas.style.height=innerHeight+"px";
 }
 
-function mapLayer(){
-  for(const layer of layers.values()){
-    if(isMapLayer(layer))return layer;
-  }
-  return null;
-}
-
-function isMapLayer(layer){
-  return !!layer&&((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType);
-}
-
-function isFullScreenLayer(layer){
-  return !!layer&&layer.type===FullScreenLayerType;
-}
-
-function isUiLayer(layer){
-  return !!layer&&((layer.flags&UiFlag)!==0);
-}
-
-function layerDrawRank(layer){
-  if(isMapLayer(layer))return 0;
-  if(isFullScreenLayer(layer))return 1;
-  if(isUiLayer(layer))return 2;
-  return 2;
-}
-
-function fit(){
-  const layer=mapLayer();
-  const width=layer?layer.width:1,height=layer?layer.height:1;
-  zoom=Math.max(.1,Math.min(innerWidth/width,innerHeight/height));
-  panX=Math.floor((innerWidth-width*zoom)/2);
-  panY=Math.floor((innerHeight-height*zoom)/2);
-  applyView();
-  draw();
-}
-
-function zoomMapAt(clientX,clientY,deltaY){
-  const layer=mapLayer();
-  if(!layer)return;
-  autoFit=false;
-  const beforeX=(clientX-panX)/zoom;
-  const beforeY=(clientY-panY)/zoom;
-  const factor=deltaY<0?1.015:1/1.015;
-  zoom=Math.min(64,Math.max(.1,zoom*factor));
-  panX=clientX-beforeX*zoom;
-  panY=clientY-beforeY*zoom;
-  applyView();
-  draw();
-}
-
-function maybeFit(){
-  if(autoFit)fit();
-  else applyView();
-}
-
-function clearBlack(){
-  ctx.fillStyle="#000";
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-}
-
-let drawPending=false;
-function scheduleDraw(){
-  if(drawPending)return;
-  drawPending=true;
-  requestAnimationFrame(()=>{
-    drawPending=false;
-    draw();
-  });
-}
-
-function mapPoint(event){
-  return {
-    x:Math.floor((event.clientX-panX)/zoom),
-    y:Math.floor((event.clientY-panY)/zoom),
-    layer:(mapLayer()||{id:0}).id
-  };
-}
-
-function screenLayerPoint(event,layer){
-  if(!layer||!layer.image)return null;
-  const pos=layerScreenPos(layer);
-  return {
-    x:Math.floor((event.clientX-pos.x)*layer.width/pos.w),
-    y:Math.floor((event.clientY-pos.y)*layer.height/pos.h),
-    layer:layer.id
-  };
-}
-
-function layerHasObjects(layer){
-  for(const object of objects.values()){
-    if(object.layer===layer.id)return true;
-  }
-  return false;
-}
-
-function mousePoint(event,preferredLayer=null){
-  if(preferredLayer!==null){
-    const layer=layers.get(preferredLayer);
-    if(isMapLayer(layer)){
-      return mapPoint(event);
+const renderer=BitworldSpriteRenderer.create({
+  canvas,
+  width:innerWidth,
+  height:innerHeight,
+  dpr:1,
+  onPacket:sendPacket,
+  onDraw:()=>{
+    if(socket&&socket.readyState===WebSocket.OPEN)setStatus("");
+  },
+  onDebug:renderDebugSprites,
+  onError:error=>{
+    if(socket){
+      try{socket.close()}catch(e){}
     }
-    if(!isFullScreenLayer(layer)||layerHasObjects(layer)){
-      const point=screenLayerPoint(event,layer);
-      if(point)return point;
-    }
+    console.error(error);
   }
-  const orderedLayers=[...layers.values()].sort((a,b)=>
-    layerDrawRank(b)-layerDrawRank(a)||b.type-a.type||b.id-a.id
-  );
-  for(const layer of orderedLayers){
-    if(!layer.image||!isUiLayer(layer))continue;
-    const pos=layerScreenPos(layer);
-    if(event.clientX<pos.x||event.clientY<pos.y||
-        event.clientX>=pos.x+pos.w||event.clientY>=pos.y+pos.h)continue;
-    return screenLayerPoint(event,layer);
+});
+
+function renderDebugSprites(snapshot){
+  debugSprites.textContent="";
+  for(const spriteEntry of snapshot.sprites){
+    const row=document.createElement("div");
+    const label=document.createElement("div");
+    const preview=document.createElement("canvas");
+    const meta=document.createElement("div");
+    const text=document.createElement("div");
+    const size=document.createElement("div");
+    const traffic=document.createElement("div");
+    row.className="debugSprite";
+    row.classList.toggle("updated",spriteEntry.updated);
+    label.className="debugSpriteId";
+    meta.className="debugSpriteMeta";
+    text.className="debugSpriteText";
+    size.className="debugSpriteSize";
+    traffic.className="debugSpriteTraffic";
+    label.textContent="#"+spriteEntry.id;
+    text.textContent=spriteEntry.label||"(no label)";
+    size.textContent=spriteEntry.width+"x"+spriteEntry.height;
+    traffic.textContent=formatBytes(spriteEntry.bytesDown)+" / "+
+      spriteEntry.updates+"x";
+    preview.width=64;
+    preview.height=64;
+    preview.getContext("2d").drawImage(spriteEntry.bitmap,0,0);
+    spriteEntry.bitmap.close();
+    label.append(size);
+    label.append(traffic);
+    meta.append(text);
+    row.append(label,preview,meta);
+    debugSprites.append(row);
   }
-  for(const layer of orderedLayers){
-    if(!layer.image||!isFullScreenLayer(layer)||!layerHasObjects(layer))continue;
-    return screenLayerPoint(event,layer);
-  }
-  return mapPoint(event);
 }
 
-function writeI16(bytes,offset,value){
-  value=Math.max(-32768,Math.min(32767,value))&0xffff;
-  bytes[offset]=value&255;
-  bytes[offset+1]=value>>8;
-}
-
-function writeU16(bytes,offset,value){
-  value=Math.max(0,Math.min(65535,value))&0xffff;
-  bytes[offset]=value&255;
-  bytes[offset+1]=value>>8;
+function toggleDebugPanel(){
+  debugOpen=!debugOpen;
+  debugPanel.classList.toggle("hidden",!debugOpen);
+  updateDebugCounters();
+  renderer.setDebug(debugOpen);
 }
 
 function sendPlayerButtons(){
-  if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
-  sendPacket(new Uint8Array([0x84,heldButtons&127]));
+  if(!playerMode)return;
+  sendPacket(BitworldSpriteRenderer.encodePlayerButtons(heldButtons));
 }
 
 function resetPlayerButtons(){
@@ -587,24 +354,10 @@ function keyButton(key){
   }
 }
 
-function asciiBytes(text){
-  const bytes=[];
-  for(let i=0;i<text.length;i++){
-    const code=text.charCodeAt(i);
-    if(code>=32&&code<127)bytes.push(code);
-  }
-  return bytes;
-}
-
 function sendInputText(text){
-  if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
-  const bytes=asciiBytes(text).slice(0,65535);
-  if(bytes.length===0)return;
-  const packet=new Uint8Array(bytes.length+3);
-  packet[0]=0x81;
-  writeU16(packet,1,bytes.length);
-  packet.set(bytes,3);
-  sendPacket(packet);
+  if(!playerMode)return;
+  const packet=BitworldSpriteRenderer.encodeInputText(text);
+  if(packet)sendPacket(packet);
 }
 
 function updateEntry(){
@@ -631,408 +384,10 @@ function stopTyping(send){
   updateEntry();
 }
 
-function sendMousePosition(event,preferredLayer=null){
-  if(!socket||socket.readyState!==WebSocket.OPEN)return;
-  const point=mousePoint(event,preferredLayer);
-  if(!point)return;
-  const bytes=new Uint8Array(6);
-  bytes[0]=0x82;
-  writeI16(bytes,1,point.x);
-  writeI16(bytes,3,point.y);
-  bytes[5]=point.layer&255;
-  sendPacket(bytes);
-}
-
-function sendMouseButton(event,down,preferredLayer=null){
-  if(!socket||socket.readyState!==WebSocket.OPEN)return;
-  const point=mousePoint(event,preferredLayer);
-  if(!point)return;
-  const bytes=new Uint8Array(9);
-  bytes[0]=0x82;
-  writeI16(bytes,1,point.x);
-  writeI16(bytes,3,point.y);
-  bytes[5]=point.layer&255;
-  bytes[6]=0x83;
-  bytes[7]=0x01;
-  bytes[8]=down?1:0;
-  sendPacket(bytes);
-}
-
-function readU16(bytes,offset){
-  return bytes[offset]|(bytes[offset+1]<<8);
-}
-
-function readU32(bytes,offset){
-  return (bytes[offset]|
-    (bytes[offset+1]<<8)|
-    (bytes[offset+2]<<16)|
-    (bytes[offset+3]*0x1000000))>>>0;
-}
-
-function readI16(bytes,offset){
-  const value=readU16(bytes,offset);
-  return value&0x8000?value-0x10000:value;
-}
-
-// PICO-8-style 16-color palette for raw-palette sprite formats (e.g.
-// Persephone's Escape).  Index 0 = fully transparent; indices 1-16 map
-// to palette entries 0-15.
-const PALETTE=[
-  [0,0,0],[194,195,199],[255,241,232],[255,0,77],
-  [255,119,168],[95,87,79],[171,82,54],[255,163,0],
-  [255,236,39],[126,37,83],[0,135,81],[0,228,54],
-  [29,43,83],[131,118,156],[41,173,255],[255,204,170]
-];
-
-function decodeSpritePixelsSnappy(compressed,width,height){
-  if(!window.SnappyJS){
-    throw new Error("SnappyJS is not loaded");
-  }
-  const expected=width*height*4;
-  const pixels=window.SnappyJS.uncompress(compressed,expected);
-  const rgba=pixels instanceof Uint8Array?pixels:new Uint8Array(pixels);
-  if(rgba.length!==expected){
-    throw new Error("Bad sprite pixel length");
-  }
-  return rgba;
-}
-
-function tryDecodeSpritePixelsSnappy(bytes,offset,remaining,width,height){
-  const expected=width*height*4;
-  if(remaining<6)return null;
-  const compressedLength=readU32(bytes,offset);
-  if(compressedLength>remaining-6)return null;
-  const labelOffset=offset+4+compressedLength;
-  const labelLength=readU16(bytes,labelOffset);
-  if(labelLength>remaining-4-compressedLength-2)return null;
-  const compressed=bytes.slice(offset+4,labelOffset);
-  let pixels;
-  try{
-    pixels=decodeSpritePixelsSnappy(compressed,width,height);
-  }catch(e){
-    return null;
-  }
-  const labelStart=labelOffset+2;
-  const labelEnd=labelStart+labelLength;
-  return {
-    pixels,
-    label:textDecoder.decode(bytes.slice(labelStart,labelEnd)),
-    offset:labelEnd
-  };
-}
-
-function decodeSpritePixelsRaw(bytes,offset,width,height){
-  const count=width*height;
-  const pixels=new Uint8Array(count*4);
-  for(let j=0;j<count;j++){
-    const idx=bytes[offset+j];
-    if(idx===0){
-      // transparent — leave RGBA as 0,0,0,0
-    }else{
-      const c=PALETTE[(idx-1)&15];
-      const out=j*4;
-      pixels[out]=c[0];pixels[out+1]=c[1];
-      pixels[out+2]=c[2];pixels[out+3]=255;
-    }
-  }
-  return pixels;
-}
-
-function ensureLayer(id){
-  if(!layers.has(id)){
-    layers.set(id,{
-      id,
-      type:MapLayerType,
-      flags:ZoomableFlag,
-      width:1,
-      height:1,
-      canvas:document.createElement("canvas"),
-      ctx:null,
-      mips:[],
-      image:null
-    });
-  }
-  const layer=layers.get(id);
-  if(!layer.ctx)layer.ctx=layer.canvas.getContext("2d");
-  layer.ctx.imageSmoothingEnabled=false;
-  return layer;
-}
-
-function defineLayer(id,type,flags){
-  const layer=ensureLayer(id);
-  layer.type=type;
-  layer.flags=flags;
-}
-
-function setViewport(layerId,width,height){
-  const layer=ensureLayer(layerId);
-  layer.width=width;
-  layer.height=height;
-  layer.canvas.width=width;
-  layer.canvas.height=height;
-  layer.mips=[];
-  layer.image=layer.ctx.createImageData(width,height);
-  maybeFit();
-}
-
-function putSpritePixel(layer,x,y,sprite,srcOffset){
-  if(x<0||y<0||x>=layer.width||y>=layer.height)return;
-  const srcA=sprite.pixels[srcOffset+3];
-  if(srcA===0)return;
-  const offset=(y*layer.width+x)*4;
-  if(srcA===255||layer.image.data[offset+3]===0){
-    layer.image.data[offset]=sprite.pixels[srcOffset];
-    layer.image.data[offset+1]=sprite.pixels[srcOffset+1];
-    layer.image.data[offset+2]=sprite.pixels[srcOffset+2];
-    layer.image.data[offset+3]=srcA;
-    return;
-  }
-  const dstA=layer.image.data[offset+3];
-  const srcAlpha=srcA/255,dstAlpha=dstA/255;
-  const outAlpha=srcAlpha+dstAlpha*(1-srcAlpha);
-  const dstWeight=dstAlpha*(1-srcAlpha);
-  layer.image.data[offset]=Math.round(
-    (sprite.pixels[srcOffset]*srcAlpha+
-      layer.image.data[offset]*dstWeight)/outAlpha
-  );
-  layer.image.data[offset+1]=Math.round(
-    (sprite.pixels[srcOffset+1]*srcAlpha+
-      layer.image.data[offset+1]*dstWeight)/outAlpha
-  );
-  layer.image.data[offset+2]=Math.round(
-    (sprite.pixels[srcOffset+2]*srcAlpha+
-      layer.image.data[offset+2]*dstWeight)/outAlpha
-  );
-  layer.image.data[offset+3]=Math.round(outAlpha*255);
-}
-
-function uiZoom(){
-  let zoom=MaxUiZoom;
-  for(const layer of layers.values()){
-    if((layer.flags&UiFlag)===0)continue;
-    const fit=Math.min(
-      innerWidth/layer.width,
-      innerHeight/layer.height
-    );
-    let layerZoom=1;
-    for(let scale=MaxUiZoom;scale>=2;scale--){
-      if(fit>=scale*MaxUiZoomFitPadding){
-        layerZoom=scale;
-        break;
-      }
-    }
-    zoom=Math.min(zoom,layerZoom);
-  }
-  return zoom;
-}
-
-function layerScale(layer,pos){
-  return Math.min(
-    Math.abs(pos.w)/layer.width,
-    Math.abs(pos.h)/layer.height
-  );
-}
-
-function layerMipLevel(layer,pos){
-  const scale=layerScale(layer,pos);
-  if(!isFinite(scale)||scale>=1)return 0;
-  return Math.max(0,Math.floor(Math.log2(1/Math.max(scale,0.000001))));
-}
-
-function layerMipCanvas(layer,level){
-  let source=layer.canvas;
-  for(let i=1;i<=level;i++){
-    const
-      width=Math.max(1,Math.floor(source.width/2)),
-      height=Math.max(1,Math.floor(source.height/2));
-    let mip=layer.mips[i-1];
-    if(!mip){
-      mip={canvas:document.createElement("canvas"),ctx:null};
-      layer.mips[i-1]=mip;
-    }
-    if(mip.canvas.width!==width)mip.canvas.width=width;
-    if(mip.canvas.height!==height)mip.canvas.height=height;
-    if(!mip.ctx)mip.ctx=mip.canvas.getContext("2d");
-    mip.ctx.clearRect(0,0,width,height);
-    mip.ctx.imageSmoothingEnabled=true;
-    mip.ctx.imageSmoothingQuality="high";
-    mip.ctx.drawImage(source,0,0,width,height);
-    source=mip.canvas;
-    if(width===1&&height===1)break;
-  }
-  return source;
-}
-
-function drawLayerCanvas(layer,pos){
-  const scale=layerScale(layer,pos);
-  let source=layer.canvas;
-  if(scale<1){
-    source=layerMipCanvas(layer,layerMipLevel(layer,pos));
-    ctx.imageSmoothingEnabled=true;
-    ctx.imageSmoothingQuality="high";
-  }else{
-    ctx.imageSmoothingEnabled=false;
-  }
-  ctx.drawImage(source,pos.x,pos.y,pos.w,pos.h);
-  ctx.imageSmoothingEnabled=false;
-}
-
-function layerScreenPos(layer){
-  if(isFullScreenLayer(layer)){
-    const scale=Math.max(.000001,Math.min(
-      innerWidth/Math.max(1,layer.width),
-      innerHeight/Math.max(1,layer.height)
-    ));
-    const width=layer.width*scale,height=layer.height*scale;
-    return {
-      x:Math.floor((innerWidth-width)/2),
-      y:Math.floor((innerHeight-height)/2),
-      w:width,
-      h:height
-    };
-  }
-  const scale=isUiLayer(layer)?uiZoom():1;
-  const width=layer.width*scale,height=layer.height*scale;
-  if(isMapLayer(layer)){
-    return {x:panX,y:panY,w:layer.width*zoom,h:layer.height*zoom};
-  }
-  switch(layer.type){
-    case 1:return {x:0,y:0,w:width,h:height};
-    case 2:return {x:innerWidth-width,y:0,w:width,h:height};
-    case 3:return {x:innerWidth-width,y:innerHeight-height,w:width,h:height};
-    case 4:return {x:0,y:innerHeight-height,w:width,h:height};
-    case 5:return {x:(innerWidth-width)/2,y:0,w:width,h:height};
-    case 6:return {x:innerWidth-width,y:(innerHeight-height)/2,w:width,h:height};
-    case 7:return {x:0,y:(innerHeight-height)/2,w:width,h:height};
-    case 8:return {x:(innerWidth-width)/2,y:innerHeight-height,w:width,h:height};
-    default:return {x:0,y:0,w:width,h:height};
-  }
-}
-
-function draw(){
-  if(!socket||socket.readyState===WebSocket.CLOSED)return;
-  ctx.imageSmoothingEnabled=false;
-  clearBlack();
-  const orderedLayers=[...layers.values()].sort((a,b)=>
-    layerDrawRank(a)-layerDrawRank(b)||a.type-b.type||a.id-b.id
-  );
-  for(const layer of orderedLayers){
-    if(!layer.image)continue;
-    const ordered=[...objects.values()].filter(object=>object.layer===layer.id).sort((a,b)=>
-      a.z-b.z||a.y-b.y||a.id-b.id
-    );
-    if(isUiLayer(layer)&&ordered.length===0)continue;
-    layer.image.data.fill(0);
-    for(const object of ordered){
-      const sprite=sprites.get(object.spriteId);
-      if(!sprite)continue;
-      const startX=Math.max(0,-object.x);
-      const startY=Math.max(0,-object.y);
-      const endX=Math.min(sprite.width,layer.width-object.x);
-      const endY=Math.min(sprite.height,layer.height-object.y);
-      if(startX>=endX||startY>=endY)continue;
-      for(let y=startY;y<endY;y++){
-        for(let x=startX;x<endX;x++){
-          putSpritePixel(
-            layer,
-            object.x+x,
-            object.y+y,
-            sprite,
-            (y*sprite.width+x)*4
-          );
-        }
-      }
-    }
-    layer.ctx.putImageData(layer.image,0,0);
-    const pos=layerScreenPos(layer);
-    drawLayerCanvas(layer,pos);
-    if(debugOpen){
-      for(const object of ordered){
-        const sprite=sprites.get(object.spriteId);
-        if(sprite)drawDebugSpriteBounds(layer,pos,object,sprite);
-      }
-    }
-  }
-  setStatus("");
-}
-
-function parse(bytes){
-  let offset=0;
-  while(offset<bytes.length){
-    const type=bytes[offset++];
-    if(type===0x01){
-      const packetStart=offset-1;
-      const id=readU16(bytes,offset);
-      const width=readU16(bytes,offset+2);
-      const height=readU16(bytes,offset+4);
-      offset+=6;
-      const remaining=bytes.length-offset;
-      const snappySprite=tryDecodeSpritePixelsSnappy(
-        bytes,
-        offset,
-        remaining,
-        width,
-        height
-      );
-      let pixels,label="";
-      if(snappySprite){
-        pixels=snappySprite.pixels;
-        label=snappySprite.label;
-        offset=snappySprite.offset;
-      }else{
-        pixels=decodeSpritePixelsRaw(bytes,offset,width,height);
-        offset+=width*height;
-      }
-      const previous=sprites.get(id);
-      const packetBytes=offset-packetStart;
-      sprites.set(id,{
-        width,
-        height,
-        pixels,
-        label,
-        updates:(previous?previous.updates:0)+1,
-        bytesDown:(previous?previous.bytesDown:0)+packetBytes,
-        updatedUntil:performance.now()+DebugUpdateFlashMs
-      });
-      scheduleDebugSprites();
-      scheduleDebugUpdateClear();
-    }else if(type===0x02){
-      const id=readU16(bytes,offset);
-      const x=readI16(bytes,offset+2);
-      const y=readI16(bytes,offset+4);
-      const z=readI16(bytes,offset+6);
-      const layer=bytes[offset+8];
-      const spriteId=readU16(bytes,offset+9);
-      objects.set(id,{id,x,y,z,layer,spriteId});
-      offset+=11;
-    }else if(type===0x03){
-      objects.delete(readU16(bytes,offset));
-      offset+=2;
-    }else if(type===0x04){
-      objects.clear();
-    }else if(type===0x05){
-      setViewport(bytes[offset],readU16(bytes,offset+1),readU16(bytes,offset+3));
-      offset+=5;
-    }else if(type===0x06){
-      defineLayer(bytes[offset],bytes[offset+1],bytes[offset+2]);
-      offset+=3;
-    }else if(type===0x07){
-      // Identity packet (stag_hunt): u16 selfObjectId. Browser viewers
-      // don't act on it; skip its 2 payload bytes and keep parsing.
-      offset+=2;
-    }else{
-      socket.close();
-      break;
-    }
-  }
-  scheduleDraw();
-}
-
 function reconnect(ws){
   if(socket!==ws)return;
   resetPlayerButtons();
   socket=null;
-  clearBlack();
   if(reconnectSeconds>0){
     setStatus("reconnecting...");
     if(!reconnectTimer){
@@ -1056,7 +411,7 @@ function connect(){
       const bytes=new Uint8Array(event.data);
       debugBytesDown+=bytes.byteLength;
       updateDebugCounters();
-      parse(bytes);
+      renderer.ingest(bytes);
     }
   };
   ws.onopen=()=>{
@@ -1075,47 +430,31 @@ function connect(){
 connect();
 
 addEventListener("resize",()=>{
-  maybeFit();
-  draw();
+  applyCanvasStyle();
+  renderer.resize(innerWidth,innerHeight,1);
 });
 addEventListener("wheel",event=>{
   event.preventDefault();
-  zoomMapAt(event.clientX,event.clientY,event.deltaY);
+  renderer.handleInput({
+    action:"wheel",
+    x:event.clientX,
+    y:event.clientY,
+    deltaY:event.deltaY
+  });
 },{passive:false});
 addEventListener("pointerdown",event=>{
-  const point=mousePoint(event);
-  activeMouseLayer=point?point.layer:null;
-  const layer=layers.get(activeMouseLayer);
-  draggingMap=isMapLayer(layer);
-  if(draggingMap){
-    autoFit=false;
-    dragX=event.clientX-panX;
-    dragY=event.clientY-panY;
-  }
-  sendMouseButton(event,true,activeMouseLayer);
+  renderer.handleInput({action:"pointerdown",x:event.clientX,y:event.clientY});
   try{canvas.setPointerCapture(event.pointerId)}catch(e){}
 });
 addEventListener("pointermove",event=>{
-  if(draggingMap){
-    panX=event.clientX-dragX;
-    panY=event.clientY-dragY;
-    applyView();
-    draw();
-  }
-  sendMousePosition(event,activeMouseLayer);
+  renderer.handleInput({action:"pointermove",x:event.clientX,y:event.clientY});
 });
 addEventListener("pointerup",event=>{
-  sendMouseButton(event,false,activeMouseLayer);
-  draggingMap=false;
-  activeMouseLayer=null;
+  renderer.handleInput({action:"pointerup",x:event.clientX,y:event.clientY});
   try{canvas.releasePointerCapture(event.pointerId)}catch(e){}
 });
 addEventListener("dblclick",event=>{
-  const point=mousePoint(event);
-  const layer=point?layers.get(point.layer):null;
-  if(!isMapLayer(layer))return;
-  autoFit=true;
-  fit();
+  renderer.handleInput({action:"dblclick",x:event.clientX,y:event.clientY});
 });
 for(const eventName of ["pointerdown","pointermove","pointerup","dblclick"]){
   debugPanel.addEventListener(eventName,event=>event.stopPropagation());
@@ -1178,7 +517,7 @@ addEventListener("pagehide",resetPlayerButtons);
 document.addEventListener("visibilitychange",()=>{
   if(document.hidden)resetPlayerButtons();
 });
-fit();
+applyCanvasStyle();
 </script>
 </body>
 </html>
