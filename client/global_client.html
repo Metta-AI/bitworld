@@ -227,7 +227,7 @@ const playerMode=url.searchParams.get("player")==="1"||
   addressPath()==="/player";
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
-let socket=null,reconnectTimer=0;
+let socket=null,reconnectTimer=0,waitingForFrame=true;
 let heldButtons=0,typing=false,textBuffer="";
 let debugOpen=false;
 let debugBytesDown=0,debugBytesUp=0;
@@ -271,7 +271,9 @@ const renderer=BitworldSpriteRenderer.create({
   dpr:1,
   onPacket:sendPacket,
   onDraw:()=>{
-    if(socket&&socket.readyState===WebSocket.OPEN)setStatus("");
+    if(socket&&socket.readyState===WebSocket.OPEN&&!waitingForFrame){
+      setStatus("");
+    }
   },
   onDebug:renderDebugSprites,
   onError:error=>{
@@ -402,6 +404,7 @@ function reconnect(ws){
 }
 
 function connect(){
+  waitingForFrame=true;
   const ws=new WebSocket(websocketAddress());
   socket=ws;
   ws.binaryType="arraybuffer";
@@ -411,12 +414,12 @@ function connect(){
       const bytes=new Uint8Array(event.data);
       debugBytesDown+=bytes.byteLength;
       updateDebugCounters();
+      waitingForFrame=false;
       renderer.ingest(bytes);
     }
   };
   ws.onopen=()=>{
     if(socket===ws){
-      setStatus("");
       sendPlayerButtons();
     }
   };

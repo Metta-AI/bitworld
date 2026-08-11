@@ -59,6 +59,15 @@ proc testGlobalClientUsesSharedRenderer() =
   doAssert "function putSpritePixel" notin html
   doAssert "function parse" notin html
 
+proc testGlobalClientWaitsForFreshFrame() =
+  ## Tests that reconnecting does not reveal the previous connection's frame.
+  echo "Testing global client reconnect frame gating"
+  let html = readClientHtml(CoworldReplayClientRoute)
+  doAssert "waitingForFrame=true" in html
+  doAssert "socket.readyState===WebSocket.OPEN&&!waitingForFrame" in html
+  doAssert "waitingForFrame=false;\n      renderer.ingest(bytes);" in html
+  doAssert "if(socket===ws){\n      setStatus(\"\");" notin html
+
 proc testSharedRendererFullScreenLayers() =
   ## Tests that the shared renderer understands full screen layers.
   echo "Testing shared renderer full screen layers"
@@ -118,6 +127,7 @@ testCanonicalCoworldClientRoutes()
 testClientStaticPaths()
 testReplayClientPreservesUri()
 testGlobalClientUsesSharedRenderer()
+testGlobalClientWaitsForFreshFrame()
 testSharedRendererFullScreenLayers()
 testSharedRendererWheelZoomTargetsMap()
 testPlayerClientSpeaksSpriteProtocol()
