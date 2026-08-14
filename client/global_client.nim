@@ -315,6 +315,22 @@ proc maybeFit*(app: GlobalApp) =
   if app.autoFit:
     app.fit()
 
+proc applyLayerViewport(app: GlobalApp, layerId, width, height: int) =
+  ## Updates one layer size and refits when the map world size changes.
+  var layer = app.layerIndex(layerId)
+  let
+    sizeChanged = layer.width != width or layer.height != height
+    wasMap = layer.isMapLayer
+  layer.width = width
+  layer.height = height
+  layer.image = nil
+  layer.dirty = true
+  app.layers[layerId] = layer
+  if wasMap and sizeChanged:
+    app.fit()
+  else:
+    app.maybeFit()
+
 proc zoomMapAt(app: GlobalApp, mouseLogical: IVec2, scrollY: float32) =
   ## Zooms the map at one screen coordinate, even when UI overlays are under it.
   let layer = app.mapLayer()
@@ -727,13 +743,7 @@ proc parseMessage*(app: GlobalApp, data: string) =
       if width <= 0 or height <= 0:
         app.closeNetwork()
         return
-      var layer = app.layerIndex(layerId)
-      layer.width = width
-      layer.height = height
-      layer.image = nil
-      layer.dirty = true
-      app.layers[layerId] = layer
-      app.maybeFit()
+      app.applyLayerViewport(layerId, width, height)
     of 0x06:
       require(3)
       let

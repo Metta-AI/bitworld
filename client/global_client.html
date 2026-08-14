@@ -766,13 +766,16 @@ function defineLayer(id,type,flags){
 
 function setViewport(layerId,width,height){
   const layer=ensureLayer(layerId);
+  const sizeChanged=layer.width!==width||layer.height!==height;
+  const wasMap=isMapLayer(layer);
   layer.width=width;
   layer.height=height;
   layer.canvas.width=width;
   layer.canvas.height=height;
   layer.mips=[];
   layer.image=layer.ctx.createImageData(width,height);
-  maybeFit();
+  if(wasMap&&sizeChanged)fit();
+  else maybeFit();
 }
 
 function putSpritePixel(layer,x,y,sprite,srcOffset){

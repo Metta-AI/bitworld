@@ -61,6 +61,15 @@ proc testGlobalClientWheelZoomTargetsMap() =
   doAssert "zoomMapAt(event.clientX,event.clientY,event.deltaY);" in html
   doAssert "addEventListener(\"wheel\",event=>{\n  event.preventDefault();\n  const point=mousePoint(event);" notin html
 
+proc testGlobalClientRefitsOnMapViewportChange() =
+  ## Tests that a map viewport size change refits even after pan or zoom.
+  echo "Testing global client refits on map viewport change"
+  let html = readClientHtml(CoworldGlobalClientRoute)
+  doAssert "const sizeChanged=layer.width!==width||layer.height!==height;" in html
+  doAssert "const wasMap=isMapLayer(layer);" in html
+  doAssert "if(wasMap&&sizeChanged)fit();" in html
+  doAssert "else maybeFit();" in html
+
 proc testPlayerClientSpeaksSpriteProtocol() =
   ## Tests the shared player client covers the sprite protocol used by bots.
   echo "Testing player client sprite protocol support"
@@ -98,6 +107,7 @@ testClientStaticPaths()
 testReplayClientPreservesUri()
 testGlobalClientFullScreenLayers()
 testGlobalClientWheelZoomTargetsMap()
+testGlobalClientRefitsOnMapViewportChange()
 testPlayerClientSpeaksSpriteProtocol()
 testEmbeddedClientBodies()
 echo "All tests passed"
