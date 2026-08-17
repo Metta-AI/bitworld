@@ -79,7 +79,10 @@ const
   UiFlag = SpriteLayerUiFlag
   MapLayerKind = SpriteLayerMap
   FullScreenLayerKind = SpriteLayerFullScreen
-  UiZoom = 3.0'f
+  UiZoomSteps = [0.5'f, 1.0'f, 2.0'f, 3.0'f, 4.0'f]
+    ## Crisp stepped UI zooms, smallest to largest, like Polyworld's HUD.
+  UiZoomFitPadding = 1.5'f
+    ## A UI layer may take at most 1/1.5 of the window at its zoom.
 when not defined(emscripten):
   const NetworkPollPasses = 8
 when defined(emscripten):
@@ -361,6 +364,26 @@ proc refreshDisplayScale(app: GlobalApp) =
     app.window.size = logicalSize.scaledWindowSize(scale)
   app.maybeFit()
 
+proc uiZoom(app: GlobalApp, logicalW, logicalH: float32): float32 =
+  ## Returns the largest stepped UI zoom at which every UI layer still
+  ## fits inside the window with padding to spare. Small windows shrink
+  ## the UI pixels and large windows grow them, matching the HTML client.
+  result = UiZoomSteps[^1]
+  for layer in app.layers.values:
+    if not layer.isUiLayer or layer.isMapLayer or layer.isFullScreenLayer:
+      continue
+    if layer.width <= 0 or layer.height <= 0:
+      continue
+    let fit = min(
+      logicalW / layer.width.float32,
+      logicalH / layer.height.float32
+    )
+    var layerZoom = UiZoomSteps[0]
+    for step in UiZoomSteps:
+      if fit >= step * UiZoomFitPadding:
+        layerZoom = step
+    result = min(result, layerZoom)
+
 proc layerScreenRect(
   app: GlobalApp,
   layer: GlobalLayer,
@@ -394,8 +417,9 @@ proc layerScreenRect(
     )
 
   let
-    w = layer.width.float32 * UiZoom
-    h = layer.height.float32 * UiZoom
+    zoom = app.uiZoom(logicalW, logicalH)
+    w = layer.width.float32 * zoom
+    h = layer.height.float32 * zoom
   case layer.kind
   of 1:
     (x: 0.0'f, y: 0.0'f, w: w, h: h)
@@ -459,7 +483,9 @@ proc allocateLayerImage(app: GlobalApp, layer: var GlobalLayer) =
   if layer.textureId == 0:
     glGenTextures(1, layer.textureId.addr)
   glBindTexture(GL_TEXTURE_2D, layer.textureId)
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST.GLint)
+  # Nearest when magnified keeps pixels crisp; linear when minified so a
+  # zoomed-out map or 0.5x UI averages pixels instead of dropping rows.
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR.GLint)
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST.GLint)
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE.GLint)
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE.GLint)

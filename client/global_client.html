@@ -221,8 +221,8 @@ function addressPath(){
 }
 const playerMode=url.searchParams.get("player")==="1"||
   addressPath()==="/player";
-const ZoomableFlag=1,UiFlag=2,MapLayerType=0,FullScreenLayerType=9,MaxUiZoom=3;
-const MaxUiZoomFitPadding=1.5;
+const ZoomableFlag=1,UiFlag=2,MapLayerType=0,FullScreenLayerType=9;
+const UiZoomSteps=[0.5,1,2,3,4],UiZoomFitPadding=1.5;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
 const DebugUpdateFlashMs=900;
@@ -810,19 +810,18 @@ function putSpritePixel(layer,x,y,sprite,srcOffset){
 }
 
 function uiZoom(){
-  let zoom=MaxUiZoom;
+  // Largest stepped zoom at which every UI layer still fits the window
+  // with padding: small windows shrink UI pixels, large windows grow them.
+  let zoom=UiZoomSteps[UiZoomSteps.length-1];
   for(const layer of layers.values()){
-    if((layer.flags&UiFlag)===0)continue;
+    if(!isUiLayer(layer)||isMapLayer(layer)||isFullScreenLayer(layer))continue;
     const fit=Math.min(
-      innerWidth/layer.width,
-      innerHeight/layer.height
+      innerWidth/Math.max(1,layer.width),
+      innerHeight/Math.max(1,layer.height)
     );
-    let layerZoom=1;
-    for(let scale=MaxUiZoom;scale>=2;scale--){
-      if(fit>=scale*MaxUiZoomFitPadding){
-        layerZoom=scale;
-        break;
-      }
+    let layerZoom=UiZoomSteps[0];
+    for(const step of UiZoomSteps){
+      if(fit>=step*UiZoomFitPadding)layerZoom=step;
     }
     zoom=Math.min(zoom,layerZoom);
   }
