@@ -79,7 +79,6 @@ const
   UiFlag = SpriteLayerUiFlag
   MapLayerKind = SpriteLayerMap
   FullScreenLayerKind = SpriteLayerFullScreen
-  UiZoom = 3.0'f
 when not defined(emscripten):
   const NetworkPollPasses = 8
 when defined(emscripten):
@@ -273,6 +272,14 @@ proc isUiLayer(layer: GlobalLayer): bool =
   ## Returns true when a layer uses screen UI coordinates.
   (layer.flags and UiFlag) != 0
 
+proc uiZoom(app: GlobalApp, logicalW, logicalH: float32): float32 =
+  ## Returns the integer UI zoom that fits every UI layer.
+  var sizes: seq[tuple[width, height: int]]
+  for layer in app.layers.values:
+    if layer.isUiLayer:
+      sizes.add((layer.width, layer.height))
+  uiZoomForLayers(logicalW, logicalH, sizes)
+
 proc layerDrawRank(layer: GlobalLayer): int =
   ## Returns a coarse draw rank where base layers stay behind UI overlays.
   if layer.isMapLayer:
@@ -378,8 +385,9 @@ proc layerScreenRect(
     )
 
   let
-    w = layer.width.float32 * UiZoom
-    h = layer.height.float32 * UiZoom
+    zoom = app.uiZoom(logicalW, logicalH)
+    w = layer.width.float32 * zoom
+    h = layer.height.float32 * zoom
   case layer.kind
   of 1:
     (x: 0.0'f, y: 0.0'f, w: w, h: h)

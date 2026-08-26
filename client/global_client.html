@@ -9,8 +9,9 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 #c{
   position:absolute;
-  left:0;
-  top:0;
+  inset:0;
+  width:100%;
+  height:100%;
   image-rendering:pixelated;
   image-rendering:crisp-edges;
   transform-origin:0 0;
@@ -163,6 +164,12 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 <script src="snappyjs.min.js"></script>
 <script>
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
+function viewWidth(){
+  return Math.max(1,canvas.clientWidth||document.documentElement.clientWidth||innerWidth);
+}
+function viewHeight(){
+  return Math.max(1,canvas.clientHeight||document.documentElement.clientHeight||innerHeight);
+}
 const status=document.getElementById("status");
 const entry=document.getElementById("entry");
 const debugPanel=document.getElementById("debugPanel");
@@ -329,8 +336,8 @@ function drawDebugSpriteBounds(layer,pos,object,sprite){
   ctx.textBaseline="top";
   const
     textWidth=Math.ceil(ctx.measureText(label).width),
-    labelX=Math.max(0,Math.min(innerWidth-textWidth-4,Math.round(x))),
-    labelY=Math.max(0,Math.min(innerHeight-10,Math.round(y)-9));
+    labelX=Math.max(0,Math.min(viewWidth()-textWidth-4,Math.round(x))),
+    labelY=Math.max(0,Math.min(viewHeight()-10,Math.round(y)-9));
   ctx.fillStyle=color;
   ctx.fillRect(labelX,labelY,textWidth+4,9);
   ctx.fillStyle="#000";
@@ -415,10 +422,9 @@ function setStatus(text){
 }
 
 function applyView(){
-  if(canvas.width!==innerWidth)canvas.width=innerWidth;
-  if(canvas.height!==innerHeight)canvas.height=innerHeight;
-  canvas.style.width=innerWidth+"px";
-  canvas.style.height=innerHeight+"px";
+  const width=viewWidth(),height=viewHeight();
+  if(canvas.width!==width)canvas.width=width;
+  if(canvas.height!==height)canvas.height=height;
 }
 
 function mapLayer(){
@@ -450,9 +456,9 @@ function layerDrawRank(layer){
 function fit(){
   const layer=mapLayer();
   const width=layer?layer.width:1,height=layer?layer.height:1;
-  zoom=Math.max(.1,Math.min(innerWidth/width,innerHeight/height));
-  panX=Math.floor((innerWidth-width*zoom)/2);
-  panY=Math.floor((innerHeight-height*zoom)/2);
+  zoom=Math.max(.1,Math.min(viewWidth()/width,viewHeight()/height));
+  panX=Math.floor((viewWidth()-width*zoom)/2);
+  panY=Math.floor((viewHeight()-height*zoom)/2);
   applyView();
   draw();
 }
@@ -811,8 +817,8 @@ function uiZoom(){
   for(const layer of layers.values()){
     if((layer.flags&UiFlag)===0)continue;
     const fit=Math.min(
-      innerWidth/layer.width,
-      innerHeight/layer.height
+      viewWidth()/layer.width,
+      viewHeight()/layer.height
     );
     let layerZoom=1;
     for(let scale=MaxUiZoom;scale>=2;scale--){
@@ -880,13 +886,13 @@ function drawLayerCanvas(layer,pos){
 function layerScreenPos(layer){
   if(isFullScreenLayer(layer)){
     const scale=Math.max(.000001,Math.min(
-      innerWidth/Math.max(1,layer.width),
-      innerHeight/Math.max(1,layer.height)
+      viewWidth()/Math.max(1,layer.width),
+      viewHeight()/Math.max(1,layer.height)
     ));
     const width=layer.width*scale,height=layer.height*scale;
     return {
-      x:Math.floor((innerWidth-width)/2),
-      y:Math.floor((innerHeight-height)/2),
+      x:Math.floor((viewWidth()-width)/2),
+      y:Math.floor((viewHeight()-height)/2),
       w:width,
       h:height
     };
@@ -898,13 +904,13 @@ function layerScreenPos(layer){
   }
   switch(layer.type){
     case 1:return {x:0,y:0,w:width,h:height};
-    case 2:return {x:innerWidth-width,y:0,w:width,h:height};
-    case 3:return {x:innerWidth-width,y:innerHeight-height,w:width,h:height};
-    case 4:return {x:0,y:innerHeight-height,w:width,h:height};
-    case 5:return {x:(innerWidth-width)/2,y:0,w:width,h:height};
-    case 6:return {x:innerWidth-width,y:(innerHeight-height)/2,w:width,h:height};
-    case 7:return {x:0,y:(innerHeight-height)/2,w:width,h:height};
-    case 8:return {x:(innerWidth-width)/2,y:innerHeight-height,w:width,h:height};
+    case 2:return {x:viewWidth()-width,y:0,w:width,h:height};
+    case 3:return {x:viewWidth()-width,y:viewHeight()-height,w:width,h:height};
+    case 4:return {x:0,y:viewHeight()-height,w:width,h:height};
+    case 5:return {x:(viewWidth()-width)/2,y:0,w:width,h:height};
+    case 6:return {x:viewWidth()-width,y:(viewHeight()-height)/2,w:width,h:height};
+    case 7:return {x:0,y:(viewHeight()-height)/2,w:width,h:height};
+    case 8:return {x:(viewWidth()-width)/2,y:viewHeight()-height,w:width,h:height};
     default:return {x:0,y:0,w:width,h:height};
   }
 }
@@ -1078,6 +1084,12 @@ addEventListener("resize",()=>{
   maybeFit();
   draw();
 });
+if(typeof ResizeObserver!=="undefined"){
+  new ResizeObserver(()=>{
+    maybeFit();
+    draw();
+  }).observe(canvas);
+}
 addEventListener("wheel",event=>{
   event.preventDefault();
   zoomMapAt(event.clientX,event.clientY,event.deltaY);

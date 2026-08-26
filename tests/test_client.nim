@@ -81,6 +81,18 @@ proc testPlayerClientSpeaksSpriteProtocol() =
     doAssert ("type===" & messageType) in html,
       "missing sprite protocol parser case " & messageType
 
+proc testGlobalClientFitsIframeView() =
+  ## Tests that the hosted viewer sizes UI to the canvas, not the page.
+  echo "Testing global client iframe view size"
+  let html = readClientHtml(CoworldReplayClientRoute)
+  doAssert "function viewWidth()" in html
+  doAssert "function viewHeight()" in html
+  doAssert "canvas.clientWidth" in html
+  doAssert "canvas.clientHeight" in html
+  doAssert "canvas.style.width=innerWidth" notin html
+  doAssert "new ResizeObserver" in html
+  doAssert "function uiZoom()" in html
+
 proc testEmbeddedClientBodies() =
   ## Tests that static client bodies are embedded in the library.
   echo "Testing embedded client bodies"
@@ -99,5 +111,6 @@ testReplayClientPreservesUri()
 testGlobalClientFullScreenLayers()
 testGlobalClientWheelZoomTargetsMap()
 testPlayerClientSpeaksSpriteProtocol()
+testGlobalClientFitsIframeView()
 testEmbeddedClientBodies()
 echo "All tests passed"
