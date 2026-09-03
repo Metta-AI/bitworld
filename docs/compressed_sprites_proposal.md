@@ -26,10 +26,18 @@ with `tools/init_packet_report.nim` in the heartleaf repo:
 | 8700 | chat banner | 318x60 | 29,353 | 76,320 | 1806 |
 | 31..35 | forest dusk veil 0..4 | 512x256 | 5 x 24,650 | 524,288 each | 1 |
 
-Two things stand out. First, a 16-color map costs 685 KB because Snappy sees
+Three things stand out. First, a 16-color map costs 685 KB because Snappy sees
 RGBA, not indices. Second, the game pre-composites five dusk tints of each
 map, and each tint is a full copy, although a tint of 16 colors is just 16
-different palette entries over the same index plane.
+different palette entries over the same index plane. All twenty tinted copies
+(main bottom, main overhang, home bottom, home overhang, five stages each) are
+per-color remaps of their four base sprites, and they cannot be replaced by a
+flat overlay: the early stages rotate hue (grass stays green while paths warm),
+so only the darkest stage approximates a veil. Third, Snappy has a floor on
+constant-color sprites: a solid 748x941 overlay costs 132,208 bytes, and each
+512x256 dusk veil above costs 24,650, so shaped or solid overlay sprites are
+not cheap under the current codec either. The same solid 748x941 sprite is 725
+bytes indexed and 2,772 bytes as deflated RGBA.
 
 ## The change
 
@@ -111,6 +119,13 @@ Per sprite, the big ones:
 | 20..24 | home bottom tint 0..4 | palette-swap | 5 x ~53,000 | 5 x 81 |
 | 8700 | chat banner | rgba-deflate | 29,353 | 17,435 |
 | 31..35 | forest dusk veil 0..4 | indexed | 5 x 24,650 | 5 x 41 |
+
+The twenty tints together went from about 4.5 MB to 1,660 bytes, with the
+base sprites carrying the index planes once. The palette swap is exact: the
+test suite decodes the encoded packet next to the legacy one and compares
+every sprite byte for byte. Opening the director page in a browser against
+this packet renders the map, forest, and clock through `spritecodec.js` with
+no console errors.
 
 The forest underlay is now 71% of the packet. It is generated at half
 resolution and upscaled 2x on the server, has 1629 colors, and does not index.
