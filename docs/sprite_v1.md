@@ -63,6 +63,54 @@ other client a sprite must carry its full pixel payload.
 
 A sprite with width `0` or height `0` is invalid.
 
+### Define Encoded Sprite
+
+Defines or replaces a sprite with a compressed pixel payload. This message has
+the same meaning as Define Sprite; only the pixel payload changes. Servers that
+send it must know the client supports it, because receivers close the
+connection on unknown message types.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Message type | `u8` | `0x08` |
+| Sprite id | `u16` | Id of the sprite to define |
+| Width | `u16` | Sprite width in pixels |
+| Height | `u16` | Sprite height in pixels |
+| Encoding | `u8` | Pixel payload encoding, see below |
+| Payload length | `u32` | Number of payload bytes |
+| Payload | `u8[]` | Encoded pixels |
+| Label length | `u16` | Number of UTF-8 label bytes |
+| Label | `u8[]` | Optional human-readable sprite label |
+
+A payload length of `0` is a pixel-free definition with the same rules as for
+Define Sprite. Every other payload must decode to exactly `Width * Height * 4`
+bytes of straight RGBA, the same pixel format Define Sprite uses.
+
+Encoding values:
+
+| Value | Name | Payload |
+| ---: | --- | --- |
+| `0x00` | RGBA Snappy | Snappy stream of raw RGBA pixels. Identical to the Define Sprite payload. |
+| `0x01` | RGBA deflate | zlib stream (RFC 1950) of raw RGBA pixels. |
+| `0x02` | Indexed | Palette count minus one as `u8`, then `count * 4` RGBA palette bytes, then a zlib stream of `Width * Height` palette index bytes, one per pixel in scanline order. |
+| `0x03` | Palette swap | Source sprite id as `u16`, palette count minus one as `u8`, then `count * 4` RGBA palette bytes. |
+
+An indexed sprite has `1 .. 256` colors. A palette index that is greater than
+or equal to the palette count is invalid.
+
+A palette swap reuses the index plane of a sprite the client already holds and
+gives it a new palette. The source sprite must have been defined earlier on
+the same connection with the indexed encoding, or as a palette swap of one,
+and must have the same width and height. The client keeps the index plane of
+every indexed sprite for this purpose; the new sprite keeps that index plane
+too, so a palette swap can itself be the source of a later palette swap.
+Palette entries beyond those the index plane uses are allowed and unused.
+
+Servers should prefer the indexed encoding for sprites with at most 256 colors,
+the palette swap for recolored copies of an indexed sprite (day tints, team
+colors), and RGBA deflate for everything else. RGBA Snappy exists so a server
+can carry the legacy payload through the new message.
+
 ### Define Object
 
 Defines or replaces an object instance.
@@ -330,6 +378,7 @@ supports this message must accept it at any point in the connection.
 | `0x04` | Server to client | Clear objects |
 | `0x05` | Server to client | Set viewport |
 | `0x06` | Server to client | Define layer |
+| `0x08` | Server to client | Define encoded sprite |
 | `0x81` | Client to server | Input text |
 | `0x82` | Client to server | Mouse position |
 | `0x83` | Client to server | Mouse button |
@@ -338,7 +387,9 @@ supports this message must accept it at any point in the connection.
 | `0x86` | Client to server | Debug sprites |
 | `0x87` | Client to server | Sprites off |
 
-Message values `0x00`, `0x07 .. 0x7f`, and `0x88 .. 0xff` are reserved.
+Message values `0x00`, `0x07`, `0x09 .. 0x7f`, and `0x88 .. 0xff` are
+reserved. Value `0x07` is used by one game (stag_hunt) for a private identity
+packet; the shared clients skip its two payload bytes.
 
 ## Rendering Model
 
@@ -380,6 +431,9 @@ A receiver should close the connection on malformed messages, including:
 - Sprite decompressed pixel payloads that do not match `Width * Height * 4`.
   A pixel-free definition with compressed length `0` carries no payload to
   check.
+- Encoded sprite payloads with an unknown encoding, a zlib stream that fails
+  to decode, a palette index outside the palette, or a palette swap whose
+  source sprite is unknown, not indexed, or a different size.
 - Pixel-free sprite definitions sent to a client that did not request
   Sprites Off.
 - Sprite labels whose byte count does not match `Label length`.

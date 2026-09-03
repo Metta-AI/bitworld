@@ -1,6 +1,8 @@
 import
+  std/tables,
   pixie,
   supersnappy,
+  zippy,
   flatty/binny
 
 const
@@ -30,6 +32,25 @@ const
   SpriteMessageClearObjects* = 0x04'u8
   SpriteMessageViewport* = 0x05'u8
   SpriteMessageLayer* = 0x06'u8
+  SpriteMessageEncodedSprite* = 0x08'u8
+    ## Define Encoded Sprite: like Define Sprite, plus one encoding byte
+    ## that says how the pixel payload is packed. 0x07 is skipped
+    ## because the stag_hunt game already uses it for identity packets.
+  SpriteEncodingRgbaSnappy* = 0x00'u8
+    ## Snappy stream of raw RGBA. The legacy Define Sprite payload.
+  SpriteEncodingRgbaDeflate* = 0x01'u8
+    ## Zlib stream of raw RGBA.
+  SpriteEncodingIndexed* = 0x02'u8
+    ## u8 palette count minus one, RGBA palette entries, then a zlib
+    ## stream of one palette index byte per pixel.
+  SpriteEncodingPaletteSwap* = 0x03'u8
+    ## u16 source sprite id, u8 palette count minus one, RGBA palette
+    ## entries. Reuses the index plane of an indexed sprite the client
+    ## already holds; only the palette is new.
+  SpriteEncodingAuto* = 0xff'u8
+    ## Encoder-only: indexed when the sprite has at most 256 colors,
+    ## otherwise RGBA deflate. Never written to the wire.
+  SpriteMaxPaletteColors* = 256
   SpriteClientChat* = 0x81'u8
   SpriteClientMouseMove* = 0x82'u8
   SpriteClientMouseButton* = 0x83'u8
@@ -68,8 +89,22 @@ type
 
   SpritePacketSpriteDef* = object
     id*, width*, height*: int
+    encoding*: uint8
+      ## One of the SpriteEncoding values. A legacy Define Sprite
+      ## message parses as SpriteEncodingRgbaSnappy.
     compressedPixels*: seq[uint8]
+      ## The encoded pixel payload as it appeared on the wire. Empty for
+      ## a pixel-free definition.
     label*: string
+
+  DecodedSprite* = object
+    ## One sprite definition decoded to straight RGBA. Indexed and
+    ## palette-swap sprites also keep their index plane and palette so
+    ## a later palette swap can reuse them.
+    width*, height*: int
+    pixels*: seq[uint8]
+    indices*: seq[uint8]
+    palette*: seq[uint8]
 
   SpritePacketObject* = object
     id*, x*, y*, z*, layer*, spriteId*: int
@@ -325,6 +360,276 @@ proc addSprite*(
   for ch in label:
     packet.addU8(uint8(ord(ch)))
 
+proc packedColor(pixels: openArray[uint8], offset: int): uint32 =
+  ## Packs one RGBA pixel into a table key.
+  uint32(pixels[offset]) or
+    (uint32(pixels[offset + 1]) shl 8) or
+    (uint32(pixels[offset + 2]) shl 16) or
+    (uint32(pixels[offset + 3]) shl 24)
+
+proc indexPixels*(
+  pixels: openArray[uint8],
+  palette: var seq[uint8],
+  indices: var seq[uint8]
+): bool =
+  ## Splits straight RGBA pixels into a palette and an index plane. The
+  ## palette lists colors in first-seen scanline order, so two sprites
+  ## with the same layout share the same index plane. Returns false
+  ## when the sprite has more than 256 colors.
+  palette.setLen(0)
+  indices.setLen(pixels.len div 4)
+  var lookup = initTable[uint32, uint8]()
+  var offset = 0
+  for i in 0 ..< indices.len:
+    let key = pixels.packedColor(offset)
+    var index: uint8
+    if lookup.hasKey(key):
+      index = lookup[key]
+    else:
+      if lookup.len >= SpriteMaxPaletteColors:
+        return false
+      index = uint8(lookup.len)
+      lookup[key] = index
+      for channel in 0 .. 3:
+        palette.add(pixels[offset + channel])
+    indices[i] = index
+    offset += 4
+  true
+
+proc encodeIndexedPayload*(pixels: openArray[uint8]): seq[uint8] =
+  ## Builds an indexed sprite payload, or an empty seq when the sprite
+  ## has more than 256 colors.
+  var palette, indices: seq[uint8]
+  if pixels.len == 0 or not pixels.indexPixels(palette, indices):
+    return
+  result.add(uint8(palette.len div 4 - 1))
+  result.add(palette)
+  result.add(zippy.compress(indices, dataFormat = dfZlib))
+
+proc encodeRgbaDeflatePayload*(pixels: openArray[uint8]): seq[uint8] =
+  ## Builds a zlib stream of raw RGBA pixels.
+  var raw = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    raw[i] = pixels[i]
+  zippy.compress(raw, dataFormat = dfZlib)
+
+proc encodeRgbaSnappyPayload*(pixels: openArray[uint8]): seq[uint8] =
+  ## Builds a Snappy stream of raw RGBA pixels, the legacy payload.
+  var raw = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    raw[i] = pixels[i]
+  supersnappy.compress(raw)
+
+proc encodePaletteSwapPayload*(
+  sourceSpriteId: int,
+  sourcePixels, pixels: openArray[uint8]
+): seq[uint8] =
+  ## Builds a palette-swap payload when `pixels` recolors `sourcePixels`
+  ## one color at a time: every pixel that has color A in the source has
+  ## the same color B here. Returns an empty seq when the sizes differ,
+  ## the source has more than 256 colors, or the recoloring is not
+  ## consistent. The source must have been sent as an indexed sprite.
+  if sourcePixels.len == 0 or sourcePixels.len != pixels.len:
+    return
+  var sourcePalette, sourceIndices: seq[uint8]
+  if not sourcePixels.indexPixels(sourcePalette, sourceIndices):
+    return
+  let count = sourcePalette.len div 4
+  var
+    palette = newSeq[uint8](count * 4)
+    seen = newSeq[bool](count)
+  for i, index in sourceIndices:
+    let
+      slot = int(index) * 4
+      offset = i * 4
+    if seen[index]:
+      for channel in 0 .. 3:
+        if palette[slot + channel] != pixels[offset + channel]:
+          return @[]
+    else:
+      seen[index] = true
+      for channel in 0 .. 3:
+        palette[slot + channel] = pixels[offset + channel]
+  result.addU16(sourceSpriteId)
+  result.add(uint8(count - 1))
+  result.add(palette)
+
+proc addEncodedSpritePayload*(
+  packet: var seq[uint8],
+  spriteId, width, height: int,
+  encoding: uint8,
+  payload: openArray[uint8],
+  label = ""
+) =
+  ## Appends one Define Encoded Sprite message with a prebuilt payload.
+  ## An empty payload is a pixel-free definition.
+  packet.addU8(SpriteMessageEncodedSprite)
+  packet.addU16(spriteId)
+  packet.addU16(width)
+  packet.addU16(height)
+  packet.addU8(encoding)
+  packet.addU32(payload.len)
+  for byte in payload:
+    packet.addU8(byte)
+  packet.addU16(label.len)
+  for ch in label:
+    packet.addU8(uint8(ord(ch)))
+
+proc addEncodedSprite*(
+  packet: var seq[uint8],
+  spriteId, width, height: int,
+  pixels: openArray[uint8],
+  label = "",
+  encoding = SpriteEncodingAuto
+): uint8 {.discardable.} =
+  ## Appends one Define Encoded Sprite message for straight RGBA pixels
+  ## and returns the encoding used. Auto picks indexed for sprites with
+  ## at most 256 colors and RGBA deflate for everything else.
+  var payload: seq[uint8]
+  result = encoding
+  case encoding
+  of SpriteEncodingAuto:
+    payload = pixels.encodeIndexedPayload()
+    result = SpriteEncodingIndexed
+    if payload.len == 0:
+      payload = pixels.encodeRgbaDeflatePayload()
+      result = SpriteEncodingRgbaDeflate
+  of SpriteEncodingIndexed:
+    payload = pixels.encodeIndexedPayload()
+    if payload.len == 0:
+      raise newException(
+        SpriteProtocolError,
+        "indexed sprite needs 1 .. 256 colors"
+      )
+  of SpriteEncodingRgbaDeflate:
+    payload = pixels.encodeRgbaDeflatePayload()
+  of SpriteEncodingRgbaSnappy:
+    payload = pixels.encodeRgbaSnappyPayload()
+  else:
+    raise newException(
+      SpriteProtocolError,
+      "unknown sprite encoding " & $encoding
+    )
+  packet.addEncodedSpritePayload(spriteId, width, height, result, payload, label)
+
+proc addPaletteSwapSprite*(
+  packet: var seq[uint8],
+  spriteId, sourceSpriteId, width, height: int,
+  sourcePixels, pixels: openArray[uint8],
+  label = ""
+): bool {.discardable.} =
+  ## Appends sprite `spriteId` as a palette swap of the indexed sprite
+  ## `sourceSpriteId` when `pixels` is a per-color recoloring of
+  ## `sourcePixels`, and as an ordinary auto-encoded sprite otherwise.
+  ## Returns true when the swap was used. The source sprite must already
+  ## have been defined with the indexed encoding in the same packet
+  ## stream, or the client has no index plane to reuse.
+  let payload = encodePaletteSwapPayload(sourceSpriteId, sourcePixels, pixels)
+  if payload.len == 0:
+    packet.addEncodedSprite(spriteId, width, height, pixels, label)
+    return false
+  packet.addEncodedSpritePayload(
+    spriteId, width, height, SpriteEncodingPaletteSwap, payload, label
+  )
+  true
+
+proc paletteSwapSourceId*(def: SpritePacketSpriteDef): int =
+  ## Returns the source sprite id a palette-swap definition reuses, or
+  ## -1 for every other definition.
+  if def.encoding != SpriteEncodingPaletteSwap or
+      def.compressedPixels.len < 3:
+    return -1
+  def.compressedPixels.readU16(0)
+
+proc expandIndices(
+  indices, palette: openArray[uint8],
+  width, height: int
+): seq[uint8] =
+  ## Expands one index plane through a palette into straight RGBA.
+  if indices.len != width * height:
+    raise newException(
+      SpriteProtocolError,
+      "sprite index plane does not match width * height"
+    )
+  let count = palette.len div 4
+  result = newSeq[uint8](indices.len * 4)
+  for i, index in indices:
+    if int(index) >= count:
+      raise newException(SpriteProtocolError, "sprite palette index out of range")
+    let
+      slot = int(index) * 4
+      offset = i * 4
+    result[offset] = palette[slot]
+    result[offset + 1] = palette[slot + 1]
+    result[offset + 2] = palette[slot + 2]
+    result[offset + 3] = palette[slot + 3]
+
+proc decodeSprite*(
+  def: SpritePacketSpriteDef,
+  source = DecodedSprite()
+): DecodedSprite =
+  ## Decodes one sprite definition to straight RGBA. `source` is the
+  ## already decoded sprite named by paletteSwapSourceId for a
+  ## palette-swap definition and is ignored by the other encodings. A
+  ## pixel-free definition decodes with empty pixels. Raises
+  ## SpriteProtocolError for payloads that do not decode to exactly
+  ## width * height * 4 bytes.
+  result.width = def.width
+  result.height = def.height
+  let payload = def.compressedPixels
+  if payload.len == 0:
+    return
+  case def.encoding
+  of SpriteEncodingRgbaSnappy:
+    try:
+      result.pixels = supersnappy.uncompress(payload)
+    except SnappyError as e:
+      raise newException(SpriteProtocolError, "bad snappy sprite: " & e.msg)
+  of SpriteEncodingRgbaDeflate:
+    try:
+      result.pixels = zippy.uncompress(payload, dfZlib)
+    except ZippyError as e:
+      raise newException(SpriteProtocolError, "bad deflate sprite: " & e.msg)
+  of SpriteEncodingIndexed:
+    let count = int(payload[0]) + 1
+    if payload.len < 1 + count * 4:
+      raise newException(SpriteProtocolError, "truncated sprite palette")
+    result.palette = payload[1 ..< 1 + count * 4]
+    try:
+      result.indices = zippy.uncompress(payload[1 + count * 4 .. ^1], dfZlib)
+    except ZippyError as e:
+      raise newException(SpriteProtocolError, "bad indexed sprite: " & e.msg)
+    result.pixels = expandIndices(
+      result.indices, result.palette, def.width, def.height
+    )
+  of SpriteEncodingPaletteSwap:
+    if payload.len < 3:
+      raise newException(SpriteProtocolError, "truncated palette swap")
+    let count = int(payload[2]) + 1
+    if payload.len < 3 + count * 4:
+      raise newException(SpriteProtocolError, "truncated sprite palette")
+    if source.indices.len != def.width * def.height:
+      raise newException(
+        SpriteProtocolError,
+        "palette swap source " & $def.paletteSwapSourceId() &
+          " is not an indexed sprite of the same size"
+      )
+    result.palette = payload[3 ..< 3 + count * 4]
+    result.indices = source.indices
+    result.pixels = expandIndices(
+      result.indices, result.palette, def.width, def.height
+    )
+  else:
+    raise newException(
+      SpriteProtocolError,
+      "unknown sprite encoding " & $def.encoding
+    )
+  if result.pixels.len != def.width * def.height * 4:
+    raise newException(
+      SpriteProtocolError,
+      "sprite pixels do not match width * height * 4"
+    )
+
 proc addObject*(
   packet: var seq[uint8],
   objectId, x, y, z, layer, spriteId: int
@@ -369,6 +674,31 @@ proc parseSpritePacket*(packet: openArray[uint8]): seq[SpritePacketMessage] =
       for i in 0 ..< compressedLen:
         message.sprite.compressedPixels[i] = bytes[offset + i].uint8
       offset += compressedLen
+      let labelLen = bytes.readU16(offset)
+      offset += 2
+      bytes.checkRead(offset, labelLen)
+      message.sprite.label = bytes.readStr(offset, labelLen)
+      offset += labelLen
+      result.add(message)
+    of SpriteMessageEncodedSprite:
+      bytes.checkRead(offset, 11)
+      var message = SpritePacketMessage(kind: spkSprite)
+      message.sprite.id = bytes.readU16(offset)
+      message.sprite.width = bytes.readU16(offset + 2)
+      message.sprite.height = bytes.readU16(offset + 4)
+      message.sprite.encoding = bytes.readU8(offset + 6)
+      let payloadLen = bytes.readU32(offset + 7)
+      offset += 11
+      if message.sprite.encoding > SpriteEncodingPaletteSwap:
+        raise newException(
+          SpriteProtocolError,
+          "unknown sprite encoding " & $message.sprite.encoding
+        )
+      bytes.checkRead(offset, payloadLen)
+      message.sprite.compressedPixels = newSeq[uint8](payloadLen)
+      for i in 0 ..< payloadLen:
+        message.sprite.compressedPixels[i] = bytes[offset + i].uint8
+      offset += payloadLen
       let labelLen = bytes.readU16(offset)
       offset += 2
       bytes.checkRead(offset, labelLen)
@@ -457,6 +787,16 @@ proc spriteMessageBytes*(packet: openArray[uint8], offset: int): int =
       return packet.len - offset
     let labelLen = packet.readU16(labelOffset)
     min(packet.len - offset, 13 + compressedLen + labelLen)
+  of SpriteMessageEncodedSprite:
+    if offset + 12 > packet.len:
+      return packet.len - offset
+    let
+      payloadLen = packet.readU32(offset + 8)
+      labelOffset = offset + 12 + payloadLen
+    if labelOffset + 2 > packet.len:
+      return packet.len - offset
+    let labelLen = packet.readU16(labelOffset)
+    min(packet.len - offset, 14 + payloadLen + labelLen)
   of SpriteMessageObject:
     min(packet.len - offset, 12)
   of SpriteMessageDeleteObject:

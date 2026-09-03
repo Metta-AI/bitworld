@@ -15,6 +15,8 @@ proc testCanonicalCoworldClientRoutes() =
   doAssert coworldClientStaticRoute(CoworldRewardClientRoute) == RewardClientRoute
   doAssert coworldClientStaticRoute(CoworldSnappyClientRoute) == SnappyClientRoute
   doAssert coworldClientStaticRoute(CoworldQrcodeClientRoute) == QrcodeClientRoute
+  doAssert coworldClientStaticRoute(CoworldSpriteCodecClientRoute) == SpriteCodecClientRoute
+  doAssert coworldClientStaticRoute(SpriteCodecClientPath) == SpriteCodecClientRoute
   doAssert coworldClientStaticRoute(ReplayClientRoute) == GlobalClientRoute
   doAssert coworldClientStaticRoute("/client/replay.html") == "/client/replay.html"
   doAssert clientStaticPath("/client/replay.html") == ""
@@ -30,9 +32,11 @@ proc testClientStaticPaths() =
   assertEndsWith(clientStaticPath(CoworldRewardClientRoute), "client" / RewardClientHtml)
   assertEndsWith(clientStaticPath(CoworldSnappyClientRoute), "client" / SnappyClientJs)
   assertEndsWith(clientStaticPath(CoworldQrcodeClientRoute), "client" / QrcodeClientJs)
+  assertEndsWith(clientStaticPath(CoworldSpriteCodecClientRoute), "client" / SpriteCodecClientJs)
   doAssert clientStaticContentType(CoworldReplayClientRoute) == "text/html; charset=utf-8"
   doAssert clientStaticContentType(CoworldSnappyClientRoute) == "application/javascript; charset=utf-8"
   doAssert clientStaticContentType(CoworldQrcodeClientRoute) == "application/javascript; charset=utf-8"
+  doAssert clientStaticContentType(CoworldSpriteCodecClientRoute) == "application/javascript; charset=utf-8"
 
 proc testReplayClientPreservesUri() =
   ## Tests that the shared replay client forwards Coworld replay URIs.
@@ -77,9 +81,24 @@ proc testPlayerClientSpeaksSpriteProtocol() =
   doAssert "Math.max(.000001,Math.min" in html
   doAssert "function layerScreenPos" in html
   doAssert "layerDrawRank" in html
-  for messageType in ["0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07"]:
+  for messageType in ["0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07", "0x08"]:
     doAssert ("type===" & messageType) in html,
       "missing sprite protocol parser case " & messageType
+
+proc testClientsDecodeEncodedSprites() =
+  ## Tests that both browser clients load the shared sprite codec and
+  ## parse Define Encoded Sprite messages with it.
+  echo "Testing client encoded sprite support"
+  for route in [CoworldReplayClientRoute, CoworldPlayerClientRoute]:
+    let html = readClientHtml(route)
+    doAssert "<script src=\"spritecodec.js\"></script>" in html
+    doAssert "type===0x08" in html
+    doAssert "SpriteCodec.readEncodedSprite(bytes,offset,textDecoder)" in html
+    doAssert "SpriteCodec.decodeSprite(" in html
+  let codec = clientStaticBody(SpriteCodecClientRoute)
+  doAssert "root.SpriteCodec={inflate,expandIndices,decodeSprite,readEncodedSprite}" in codec
+  doAssert clientStaticBody(CoworldSpriteCodecClientRoute) == codec
+  doAssert clientStaticBody(SpriteCodecClientPath) == codec
 
 proc testGlobalClientFitsIframeView() =
   ## Tests that the hosted viewer sizes UI to the canvas, not the page.
@@ -111,6 +130,7 @@ testReplayClientPreservesUri()
 testGlobalClientFullScreenLayers()
 testGlobalClientWheelZoomTargetsMap()
 testPlayerClientSpeaksSpriteProtocol()
+testClientsDecodeEncodedSprites()
 testGlobalClientFitsIframeView()
 testEmbeddedClientBodies()
 echo "All tests passed"
