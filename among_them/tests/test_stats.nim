@@ -319,6 +319,46 @@ suite "stats":
     check results["imposter"][1].getInt() == 1
     check results["crew"][1].getInt() == 0
 
+  test "player result json keeps configured slots after disconnect":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.imposterCount = 1
+    config.autoImposterCount = false
+    config.tasksPerPlayer = 1
+    config.roleRevealTicks = 0
+    config.update("""{"tokens":["crew-token","imposter-token"],"slots":[
+      {"name":"crew","token":"crew-token","role":"crew"},
+      {"name":"imposter","token":"imposter-token","role":"imposter"}
+    ]}""")
+    var sim = initAmongThemForTest(config)
+
+    let
+      crewIndex = sim.addPlayer("crew", 0, "crew-token")
+      imposterIndex = sim.addPlayer("imposter", 1, "imposter-token")
+    sim.startGame()
+    sim.addReward(crewIndex, 3)
+    sim.addReward(imposterIndex, 5)
+    sim.recordKill(imposterIndex)
+    sim.players.delete(crewIndex)
+    sim.finishGame(Imposter)
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["names"].len == 2
+    check results["names"][0].getStr() == "crew"
+    check results["scores"][0].getInt() == 3
+    check not results["win"][0].getBool()
+    check results["tasks"][0].getInt() == 0
+    check results["kills"][0].getInt() == 0
+    check results["imposter"][0].getInt() == 0
+    check results["crew"][0].getInt() == 1
+    check results["names"][1].getStr() == "imposter"
+    check results["scores"][1].getInt() == 5 + WinReward
+    check results["win"][1].getBool()
+    check results["tasks"][1].getInt() == 0
+    check results["kills"][1].getInt() == 1
+    check results["imposter"][1].getInt() == 1
+    check results["crew"][1].getInt() == 0
+
   test "player result json reflects vote counters":
     let config = defaultGameConfig()
     var sim = initAmongThemForTest(config)
