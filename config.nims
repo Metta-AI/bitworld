@@ -44,8 +44,8 @@ when defined(emscripten):
     "passL",
     (&"""
     -o {OutputDir / projectName()}.html
-    --preload-file {RootDir / "clients" / "data"}@clients/data
-    --preload-file {RootDir / "clients" / "dist"}@clients/dist
+    --preload-file {RootDir / "client" / "data"}@client/data
+    --preload-file {RootDir / "client" / "dist"}@client/dist
     --preload-file {RootDir / "among_them" / "map.json"}@among_them/map.json
     --preload-file {RootDir / "among_them" / "skeld2.aseprite"}@among_them/skeld2.aseprite
     --preload-file {RootDir / "among_them" / "spritesheet.aseprite"}@among_them/spritesheet.aseprite

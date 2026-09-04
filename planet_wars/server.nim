@@ -1,7 +1,7 @@
 import
   std/[locks, monotimes, os, strutils, tables, times],
   mummy,
-  bitworld/clients, protocol, sim, global, profiling
+  bitworld/client, protocol, sim, global, profiling
 
 const
   HealthzPath = "/healthz"

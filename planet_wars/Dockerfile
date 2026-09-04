@@ -56,9 +56,9 @@ COPY --from=build \
   /bin/planet_wars
 COPY --from=build /workspace/bitworld/planet_wars/*.json ./planet_wars/
 COPY --from=build /workspace/bitworld/among_them/tiny5.aseprite ./planet_wars/
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/planet_wars
 EXPOSE 8080

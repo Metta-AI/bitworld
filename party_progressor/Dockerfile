@@ -40,9 +40,9 @@ COPY --from=build \
   /workspace/bitworld/party_progressor/party_progressor \
   /bin/party_progressor
 COPY --from=build /workspace/bitworld/party_progressor/data ./party_progressor/data
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/party_progressor
 CMD ["/bin/party_progressor", "--address:0.0.0.0", "--port:8080"]

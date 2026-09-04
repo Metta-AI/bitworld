@@ -1249,7 +1249,7 @@ proc repoDir*(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir*(): string =
-  repoDir() / "clients" / "data"
+  repoDir() / "client" / "data"
 
 proc sheetPath*(): string =
   ## Returns the new 32 by 32 Aseprite sheet path.

@@ -382,7 +382,7 @@ when not defined(modulabotLibrary):
 
   proc initViewerApp*(atlasPath: string): ViewerApp =
     ## Opens the diagnostic viewer window. `atlasPath` should match
-    ## `bot.paths.atlasPath` — usually `bitworld/clients/dist/atlas.png`.
+    ## `bot.paths.atlasPath` — usually `bitworld/client/dist/atlas.png`.
     result = ViewerApp()
     result.window = newWindow(
       title = "Modulabot Viewer",

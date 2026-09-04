@@ -2,7 +2,7 @@ import
   std/[os, parseopt, uri],
   protocol, windy,
   global, replays, sim,
-  ../clients/global_client
+  ../client/global_client
 
 when not defined(emscripten):
   import std/monotimes

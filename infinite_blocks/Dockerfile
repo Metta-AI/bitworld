@@ -42,9 +42,9 @@ COPY --from=build /workspace/bitworld/infinite_blocks/data ./infinite_blocks/dat
 COPY --from=build \
   /workspace/bitworld/among_them/tiny5.aseprite \
   ./infinite_blocks/data/tiny5.aseprite
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/infinite_blocks
 CMD ["/bin/infinite_blocks", "--address:0.0.0.0", "--port:8080"]

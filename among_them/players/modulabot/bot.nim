@@ -46,7 +46,7 @@ const
   ThisFile = currentSourcePath()
   DefaultGameRoot* = ThisFile.parentDir().parentDir().parentDir()
   DefaultBitworldRoot* = DefaultGameRoot.parentDir()
-  DefaultAtlasPath* = DefaultBitworldRoot / "clients" / "dist" / "atlas.png"
+  DefaultAtlasPath* = DefaultBitworldRoot / "client" / "dist" / "atlas.png"
 
 proc defaultPaths*(mapPath = ""): Paths =
   ## Builds a `Paths` record using the compile-time defaults. `mapPath`

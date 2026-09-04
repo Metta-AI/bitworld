@@ -304,7 +304,7 @@ type
     # Q8 resolved: explicit paths threaded through initBot, no setCurrentDir.
     # Populated once at construction; immutable thereafter.
     gameRoot: string      # absolute path to among_them/ (replaces gameDir())
-    atlasPath: string     # absolute path to clients/dist/atlas.png
+    atlasPath: string     # absolute path to client/dist/atlas.png
     mapPath: string       # absolute path to map JSON / aseprite
 
   Bot* = object

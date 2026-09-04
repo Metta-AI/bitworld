@@ -418,9 +418,9 @@ proc gameDir*(): string =
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
   when defined(emscripten):
-    "clients" / "data"
+    "client" / "data"
   else:
-    getCurrentDir() / ".." / "clients" / "data"
+    getCurrentDir() / ".." / "client" / "data"
 
 proc resolveGamePath*(path: string, baseDir = ""): string =
   ## Resolves a game data path against the map file and game directory.
