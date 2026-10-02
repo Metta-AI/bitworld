@@ -15,7 +15,7 @@ scripted teacher uses `aoTeacher` and no platform call ID. Fallbacks use
 
 Finish exactly once with the engine's completed, truncated, or failed status,
 outcome, and participant scores. `writeEvents` and `writeCompleteEpisode` create
-owner-only files and refuse existing destinations. `writeEventsToUri` accepts a
+owner-only POSIX files with exclusive creation and refuse existing destinations. `writeEventsToUri` accepts a
 private file URI or a platform-provided signed upload URI. The dedicated runtime
 environment name is `COGAME_SAVE_TRAJECTORY_URI`; never reuse the replay URI.
 Only `esCompleted` episodes can use `writeCompleteEpisode`.

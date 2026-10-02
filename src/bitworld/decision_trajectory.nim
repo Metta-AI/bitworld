@@ -3,6 +3,8 @@
 
 import std/[json, options, os, strutils]
 import runtime
+when defined(posix):
+  import std/posix
 
 const CogameSaveTrajectoryUriEnv* = "COGAME_SAVE_TRAJECTORY_URI"
 
@@ -125,16 +127,28 @@ proc finish*(trajectory: DecisionTrajectory, status: EpisodeStatus,
   trajectory.finished = true
 
 proc writePrivate(destination, content: string) =
-  if fileExists(destination) or dirExists(destination):
-    raise newException(ValueError, "trajectory destination already exists: " & destination)
   let parent = destination.parentDir()
   if parent.len > 0 and not dirExists(parent):
     createDir(parent)
     setFilePermissions(parent, {fpUserRead, fpUserWrite, fpUserExec})
-  let output = open(destination, fmWrite)
-  defer: output.close()
-  setFilePermissions(destination, {fpUserRead, fpUserWrite})
-  output.write(content)
+  when defined(posix):
+    # Creation, overwrite refusal, and privacy are one operation.
+    let descriptor = posix.open(destination.cstring,
+      O_WRONLY or O_CREAT or O_EXCL, Mode(0o600))
+    if descriptor < 0:
+      let code = osLastError()
+      if code == OSErrorCode(EEXIST):
+        raise newException(ValueError, "trajectory destination already exists: " & destination)
+      raiseOSError(code)
+    var output: File
+    if not open(output, FileHandle(descriptor), fmWrite):
+      let code = osLastError()
+      discard posix.close(descriptor)
+      raiseOSError(code)
+    defer: output.close()
+    output.write(content)
+  else:
+    raise newException(ValueError, "private file trajectories require POSIX exclusive creation")
 
 proc eventsJsonl*(trajectory: DecisionTrajectory): string =
   ## A terminal/truncated/failed summary is retained; the SDK chooses eligibility.
