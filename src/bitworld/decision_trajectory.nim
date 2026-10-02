@@ -11,6 +11,8 @@ const CogameSaveTrajectoryUriEnv* = "COGAME_SAVE_TRAJECTORY_URI"
 type
   AttemptOrigin* = enum
     aoModel, aoTeacher, aoFallback, aoHuman, aoUnknown
+  InferenceMode* = enum
+    imTextAction = "text_action", imCandidate = "candidate"
   ActionStatus* = enum
     asAccepted, asRejected, asFallback, asMissing
   EpisodeStatus* = enum
@@ -19,6 +21,7 @@ type
     attemptId*, policy*: string
     model*: Option[string]
     origin*: AttemptOrigin
+    inferenceMode*: InferenceMode
     prompt*, request*, response*, rawResponse*, parsedAction*, decoder*: JsonNode
     accepted*: bool
     platformCallId*, rejectionReason*, modelIdentity*, tokenizerIdentity*: Option[string]
@@ -37,9 +40,11 @@ type
     finished: bool
 
 proc newDecisionAttempt*(attemptId, policy: string,
-    origin: AttemptOrigin): DecisionAttempt =
+    origin: AttemptOrigin, inferenceMode: InferenceMode = imTextAction): DecisionAttempt =
+  ## Structured game decisions use text_action; candidate adapters opt in explicitly.
   ## Every nullable JSON value has a JSON null, never an uninitialized pointer.
   DecisionAttempt(attemptId: attemptId, policy: policy, origin: origin,
+    inferenceMode: inferenceMode,
     prompt: newJNull(), request: newJNull(), response: newJNull(),
     rawResponse: newJNull(), parsedAction: newJNull(), decoder: newJNull())
 
@@ -53,7 +58,7 @@ proc jsonOption[T](value: Option[T]): JsonNode =
   if value.isSome: %value.get() else: newJNull()
 
 proc attemptEvidenceJson*(attempt: DecisionAttempt): JsonNode =
-  ## Private authenticated player-to-game evidence. Engine acceptance is excluded.
+  ## Private player evidence excludes engine-owned acceptance and inference mode.
   %*{
     "attempt_id": attempt.attemptId, "policy": attempt.policy,
     "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
@@ -181,6 +186,7 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
         raise newException(ValueError, "selected proposal differs from executed action")
     encoded.add(%*{
       "attempt_id": attempt.attemptId, "policy": attempt.policy,
+      "inference_mode": $attempt.inferenceMode,
       "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
       "prompt": attempt.prompt, "request": attempt.request,
       "response": attempt.response, "raw_response": attempt.rawResponse,

@@ -152,3 +152,24 @@ suite "private authoritative decision trajectories":
       defer: removeFile(alias)
       expect ValueError: writePrivate(alias, "replacement through symlink")
       check readFile(destination) == "original private corpus"
+
+  test "private inference mode is game-owned and absent from the player wire":
+    var attempt = teacher()
+    check attempt.inferenceMode == imTextAction
+    let wire = attempt.attemptEvidenceJson()
+    check not wire.hasKey("inference_mode")
+    wire["inference_mode"] = %"candidate"
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire.delete("inference_mode")
+    check readAttemptEvidence(wire).inferenceMode == imTextAction
+    let record = episode()
+    record.recordDecision("d0", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted)
+    attempt.inferenceMode = imCandidate
+    attempt.attemptId = "d1-a0"
+    record.recordDecision("d1", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted)
+    record.finish(esCompleted, %*{"winner": 0}, %*{"0": 1})
+    let events = record.eventsJsonl().splitLines()
+    check parseJson(events[0])["attempts"][0]["inference_mode"].getStr() == "text_action"
+    check parseJson(events[1])["attempts"][0]["inference_mode"].getStr() == "candidate"
