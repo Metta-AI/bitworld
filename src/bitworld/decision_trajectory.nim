@@ -42,6 +42,98 @@ proc statusName(status: ActionStatus): string =
 proc jsonOption[T](value: Option[T]): JsonNode =
   if value.isSome: %value.get() else: newJNull()
 
+proc attemptEvidenceJson*(attempt: DecisionAttempt): JsonNode =
+  ## Private authenticated player-to-game evidence. Engine acceptance is excluded.
+  %*{
+    "attempt_id": attempt.attemptId, "policy": attempt.policy,
+    "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
+    "prompt": attempt.prompt, "request": attempt.request,
+    "response": attempt.response, "raw_response": attempt.rawResponse,
+    "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
+    "rejection_reason": jsonOption(attempt.rejectionReason),
+    "model_identity": jsonOption(attempt.modelIdentity),
+    "tokenizer_identity": jsonOption(attempt.tokenizerIdentity),
+    "chat_template_sha256": jsonOption(attempt.chatTemplateSha256),
+    "stop_reason": jsonOption(attempt.stopReason), "latency_ms": jsonOption(attempt.latencyMs),
+    "input_tokens": jsonOption(attempt.inputTokens), "output_tokens": jsonOption(attempt.outputTokens),
+    "prompt_token_ids": jsonOption(attempt.promptTokenIds),
+    "sampled_token_ids": jsonOption(attempt.sampledTokenIds),
+    "behavior_logprobs": jsonOption(attempt.behaviorLogprobs)
+  }
+
+proc evidenceValue[T](payload: JsonNode, key: string, _: typedesc[T]): T =
+  let value = payload[key]
+  when T is string:
+    if value.kind != JString: raise newException(ValueError, key & " must be a string")
+    result = value.getStr()
+  elif T is int:
+    if value.kind != JInt: raise newException(ValueError, key & " must be an integer")
+    result = value.getInt()
+  elif T is float:
+    if value.kind notin {JFloat, JInt}: raise newException(ValueError, key & " must be a number")
+    result = value.getFloat()
+  elif T is seq:
+    if value.kind != JArray: raise newException(ValueError, key & " must be an array")
+    for item in value:
+      result.add(evidenceValue(%*{"item": item}, "item", typeof(result[0])))
+
+proc evidenceOption[T](payload: JsonNode, key: string, _: typedesc[T]): Option[T] =
+  if payload[key].kind == JNull: none(T)
+  else: some(evidenceValue(payload, key, T))
+
+proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
+  ## Strict version-one wire reader. The game supplies parsedAction and accepted.
+  if payload.kind != JObject:
+    raise newException(ValueError, "private attempt evidence must be an object")
+  let expected = attemptEvidenceJson(DecisionAttempt())
+  for key in expected.keys:
+    if not payload.hasKey(key): raise newException(ValueError, "missing attempt field: " & key)
+  for key in payload.keys:
+    if not expected.hasKey(key): raise newException(ValueError, "unexpected player-owned field: " & key)
+  result.attemptId = evidenceValue(payload, "attempt_id", string)
+  result.policy = evidenceValue(payload, "policy", string)
+  if result.attemptId.len == 0 or result.policy.len == 0:
+    raise newException(ValueError, "attempt identity and policy are required")
+  let origin = evidenceValue(payload, "origin", string)
+  case origin
+  of "model": result.origin = aoModel
+  of "teacher": result.origin = aoTeacher
+  of "fallback": result.origin = aoFallback
+  of "human": result.origin = aoHuman
+  of "unknown": result.origin = aoUnknown
+  else: raise newException(ValueError, "unknown attempt origin")
+  result.prompt = copy(payload["prompt"])
+  result.request = copy(payload["request"])
+  result.response = copy(payload["response"])
+  result.rawResponse = copy(payload["raw_response"])
+  result.decoder = copy(payload["decoder"])
+  result.model = evidenceOption(payload, "model", string)
+  result.platformCallId = evidenceOption(payload, "platform_call_id", string)
+  if result.platformCallId.isSome:
+    let identity = result.platformCallId.get()
+    if identity.len != 36: raise newException(ValueError, "platform_call_id must be a UUID")
+    for index, character in identity:
+      if index in [8, 13, 18, 23]:
+        if character != '-': raise newException(ValueError, "platform_call_id must be a UUID")
+      elif character notin {'0'..'9', 'a'..'f', 'A'..'F'}:
+        raise newException(ValueError, "platform_call_id must be a UUID")
+  result.rejectionReason = evidenceOption(payload, "rejection_reason", string)
+  result.modelIdentity = evidenceOption(payload, "model_identity", string)
+  result.tokenizerIdentity = evidenceOption(payload, "tokenizer_identity", string)
+  result.chatTemplateSha256 = evidenceOption(payload, "chat_template_sha256", string)
+  result.stopReason = evidenceOption(payload, "stop_reason", string)
+  result.latencyMs = evidenceOption(payload, "latency_ms", float)
+  result.inputTokens = evidenceOption(payload, "input_tokens", int)
+  result.outputTokens = evidenceOption(payload, "output_tokens", int)
+  result.promptTokenIds = evidenceOption(payload, "prompt_token_ids", seq[int])
+  result.sampledTokenIds = evidenceOption(payload, "sampled_token_ids", seq[int])
+  result.behaviorLogprobs = evidenceOption(payload, "behavior_logprobs", seq[float])
+  result.parsedAction = newJNull()
+  if result.sampledTokenIds.isSome != result.behaviorLogprobs.isSome:
+    raise newException(ValueError, "sampled tokens and behavior log probabilities must be paired")
+  if result.sampledTokenIds.isSome and result.sampledTokenIds.get().len != result.behaviorLogprobs.get().len:
+    raise newException(ValueError, "one behavior log probability is required per sampled token")
+
 proc newDecisionTrajectory*(episodeId, seedFamily, game, gameVersion,
     sourceRevision: string): DecisionTrajectory =
   for value in [episodeId, seedFamily, game, gameVersion, sourceRevision]:

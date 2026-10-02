@@ -65,3 +65,31 @@ suite "private authoritative decision trajectories":
     expect ValueError:
       record.recordDecision("d0", "0", %*{}, @[], none(string),
         %*{"move": 1}, asFallback, fallbackOrigin = some("scripted-baseline"))
+
+  test "private player wire round-trips native sampling without engine claims":
+    var attempt = teacher()
+    attempt.origin = aoModel
+    attempt.platformCallId = some("00000000-0000-4000-8000-000000000001")
+    attempt.modelIdentity = some("checkpoint-sha")
+    attempt.tokenizerIdentity = some("tokenizer-sha")
+    attempt.chatTemplateSha256 = some("template-sha")
+    attempt.promptTokenIds = some(@[1, 2])
+    attempt.sampledTokenIds = some(@[3, 4])
+    attempt.behaviorLogprobs = some(@[-0.5, -0.3])
+    attempt.stopReason = some("eos")
+    let wire = attempt.attemptEvidenceJson()
+    let decoded = readAttemptEvidence(wire)
+    check decoded.attemptEvidenceJson() == wire
+    check not decoded.accepted
+    check decoded.parsedAction.kind == JNull
+    wire["accepted"] = %true
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire.delete("accepted")
+    wire["behavior_logprobs"] = %*[-0.5]
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire["behavior_logprobs"] = %*[-0.5, -0.3]
+    wire["platform_call_id"] = %"fabricated"
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire["platform_call_id"] = newJNull()
+    wire["model"] = %42
+    expect ValueError: discard readAttemptEvidence(wire)

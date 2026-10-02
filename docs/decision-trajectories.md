@@ -25,3 +25,15 @@ qualification gate still checks completeness, private observations, source
 pins, exact inputs, selected/applied actions, and the evidence required for
 supervised fine-tuning or reinforcement learning. Using the recorder alone does
 not certify a game, a published image, runtime parity, or a stronger learner.
+
+## Authenticated player evidence
+
+Players serialize `DecisionAttempt.attemptEvidenceJson()` on a private,
+authenticated channel. Games read it with `readAttemptEvidence()`, then supply
+`accepted` and `parsedAction` after their production parser applies the action.
+The wire reader rejects missing, extra, incorrectly typed fields and invalid
+platform UUIDs. It retains actual prompt/sample token IDs and draw-time behavior
+log probabilities; paired sampling arrays must have equal lengths. No reader can
+verify a client assertion: platform attribution and checkpoint identity still
+require the trusted sidecar/archive join. Never place this envelope in public
+replays or spectator frames.
