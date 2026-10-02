@@ -1,0 +1,33 @@
+name: Private decision trajectories
+
+on:
+  push:
+    branches: [master]
+    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, tests/test_decision_trajectory.nim, .github/workflows/decision-trajectories.yml]
+  pull_request:
+    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, tests/test_decision_trajectory.nim, .github/workflows/decision-trajectories.yml]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned Nim dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/nimby" https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-X64
+          chmod +x "$HOME/.local/bin/nimby"
+          "$HOME/.local/bin/nimby" use 2.2.4
+          "$HOME/.local/bin/nimby" --global sync nimby.lock
+          echo "$HOME/.nimby/nim/bin" >> "$GITHUB_PATH"
+          for pkg in "$HOME"/.nimby/pkgs/*; do
+            if [ -d "$pkg/src" ]; then
+              echo "--path:\"$pkg/src\"" >> nim.cfg
+            else
+              echo "--path:\"$pkg\"" >> nim.cfg
+            fi
+          done
+      - name: Verify private complete-episode and attribution contracts
+        run: nim c -r --path:src -o:/tmp/test-decision-trajectory tests/test_decision_trajectory.nim
