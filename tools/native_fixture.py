@@ -92,7 +92,7 @@ def qualify(binary, config, choose_action, output, revision):
                     seat.close()
                 if process.poll() is None:
                     process.terminate()
-                process.wait(timeout=5)
+                process.wait(timeout=30)
                 server.shutdown()
                 server.server_close()
         archive_path = folder / "provider-archive.jsonl"
