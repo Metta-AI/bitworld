@@ -82,6 +82,11 @@ suite "private authoritative decision trajectories":
     check decoded.attemptEvidenceJson() == wire
     check not decoded.accepted
     check decoded.parsedAction.kind == JNull
+    wire["behavior_logprobs"] = newJNull()
+    let greedy = readAttemptEvidence(wire)
+    check greedy.sampledTokenIds.get() == @[3, 4]
+    check greedy.behaviorLogprobs.isNone
+    wire["behavior_logprobs"] = %*[-0.5, -0.3]
     wire["accepted"] = %true
     expect ValueError: discard readAttemptEvidence(wire)
     wire.delete("accepted")

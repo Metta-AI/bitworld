@@ -136,9 +136,9 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   result.sampledTokenIds = evidenceOption(payload, "sampled_token_ids", seq[int])
   result.behaviorLogprobs = evidenceOption(payload, "behavior_logprobs", seq[float])
   result.parsedAction = newJNull()
-  if result.sampledTokenIds.isSome != result.behaviorLogprobs.isSome:
-    raise newException(ValueError, "sampled tokens and behavior log probabilities must be paired")
-  if result.sampledTokenIds.isSome and result.sampledTokenIds.get().len != result.behaviorLogprobs.get().len:
+  if result.behaviorLogprobs.isSome and result.sampledTokenIds.isNone:
+    raise newException(ValueError, "behavior log probabilities require sampled tokens")
+  if result.behaviorLogprobs.isSome and result.sampledTokenIds.get().len != result.behaviorLogprobs.get().len:
     raise newException(ValueError, "one behavior log probability is required per sampled token")
 
 proc newDecisionTrajectory*(episodeId, seedFamily, game, gameVersion,
