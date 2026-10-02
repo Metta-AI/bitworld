@@ -292,3 +292,69 @@ proc writeCompleteEpisode*(trajectory: DecisionTrajectory, destination: string) 
     raise newException(ValueError, "completed episode has no decisions")
   writePrivate(destination, $(%*{"schema_version": "1", "episode": trajectory.summary,
     "decisions": trajectory.decisions}) & "\n")
+
+proc captureInferenceRequest*(attempt: var DecisionAttempt, body: JsonNode,
+    system, user: string) =
+  ## Keep the actual provider body and exact model messages before transport.
+  attempt.prompt = %*[{"role": "system", "content": system},
+    {"role": "user", "content": user}]
+  attempt.request = copy(body)
+  attempt.decoder = %*{"max_tokens": body["max_tokens"],
+    "temperature": body["temperature"]}
+
+proc captureInferenceResponse*(attempt: var DecisionAttempt, raw: string,
+    code: int, callId, modelIdentity, tokenizerIdentity, templateIdentity: string,
+    timeoutSeconds: int, maxAttempts: int) =
+  ## HTTP headers retain served identities even when the response was rejected.
+  attempt.rawResponse = %raw
+  if callId.len > 0: attempt.platformCallId = some(callId)
+  if modelIdentity.len > 0: attempt.modelIdentity = some(modelIdentity)
+  if tokenizerIdentity.len > 0: attempt.tokenizerIdentity = some(tokenizerIdentity)
+  if templateIdentity.len > 0: attempt.chatTemplateSha256 = some(templateIdentity)
+  if code < 200 or code >= 300: return
+  let response = parseJson(raw)
+  attempt.rawResponse = response
+  attempt.model = some(response["model"].getStr())
+  attempt.stopReason = some(response["stop_reason"].getStr())
+  attempt.inputTokens = some(response["usage"]["input_tokens"].getInt())
+  attempt.outputTokens = some(response["usage"]["output_tokens"].getInt())
+  if response.hasKey("inference_settings"):
+    let actual = response["inference_settings"]
+    if actual["max_output_tokens"] != attempt.request["max_tokens"] or
+        actual["temperature"] != attempt.request["temperature"]:
+      raise newException(ValueError, "served decoder differs from the actual request")
+    attempt.decoder = copy(actual)
+    attempt.decoder["timeout_seconds"] = %min(timeoutSeconds.float,
+      actual["timeout_seconds"].getFloat())
+    attempt.decoder["max_attempts"] = %maxAttempts
+
+proc recordExecutedDecision*(trajectory: DecisionTrajectory, decisionId, seat,
+    policy: string, observation, action: JsonNode, evidence: seq[DecisionAttempt],
+    origin: AttemptOrigin, system = "", user = "", terminal = false) =
+  ## The engine supplies the executed action and actual policy binding after apply.
+  if origin == aoModel and evidence.len == 0:
+    raise newException(ValueError, "model decisions require captured inference attempts")
+  var attempts = evidence
+  var selected = none(string)
+  if origin != aoFallback:
+    if attempts.len == 0:
+      var attempt = newDecisionAttempt("action", policy, origin)
+      if origin == aoTeacher:
+        attempt.prompt = %*[{"role": "system", "content": system},
+          {"role": "user", "content": user}]
+        attempt.response = %($action)
+        attempt.decoder = %*{"method": "scripted-teacher"}
+      attempts.add(attempt)
+    attempts[^1].parsedAction = copy(action)
+    attempts[^1].accepted = true
+    selected = some(attempts[^1].attemptId)
+  else:
+    for attempt in attempts.mitems:
+      if attempt.accepted:
+        attempt.accepted = false
+        attempt.rejectionReason = some("engine rejected proposal")
+  for attempt in attempts.mitems:
+    attempt.policy = policy
+  trajectory.recordDecision(decisionId, seat, observation, attempts, selected,
+    action, (if origin == aoFallback: asFallback else: asAccepted), terminal,
+    (if origin == aoFallback: some("scripted-fallback") else: none(string)))
