@@ -62,7 +62,7 @@ def qualify(binary, config, choose_action, output, revision):
                "COGAME_SAVE_TRAJECTORY_URI": (folder / "trajectory.jsonl").as_uri(),
                "COWORLD_LLM_ENDPOINT": f"http://127.0.0.1:{server.server_port}",
                "COWORLD_LLM_MODEL": "fixture/synthetic", "COWORLD_LLM_TEMPERATURE": "0",
-               "COWORLD_EPISODE_ID": episode_id, "COWORLD_GAME_VERSION": "source-fixture",
+               "COWORLD_EPISODE_ID": episode_id, "COWORLD_GAME_VERSION": "0.0.0+fixture",
                "COWORLD_SOURCE_REVISION": revision}
         with (folder / "game.log").open("w") as log:
             process = subprocess.Popen([binary], env=env, stdout=log, stderr=subprocess.STDOUT)
