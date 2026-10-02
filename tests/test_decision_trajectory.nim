@@ -1,4 +1,4 @@
-import std/[json, options, os, strutils, unittest]
+import std/[base64, json, options, os, strutils, unittest]
 import bitworld/decision_trajectory
 
 proc teacher(): DecisionAttempt =
@@ -116,3 +116,21 @@ suite "private authoritative decision trajectories":
     let events = record.eventsJsonl().splitLines()
     check parseJson(events[0])["attempts"][0]["raw_response"].kind == JNull
     check parseJson(events[1])["attempts"][0]["decoder"].kind == JNull
+
+  test "macro orders keep authoritative physical ticks separately from parsed action":
+    let record = episode()
+    let physical = ExecutionEvidence(startTick: 12, endTick: 14, tickHz: 24,
+      seatControlsBase64: encode("\xff\x00\x7f\x03\x01\x02\x80\x00"))
+    record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+      %*{"move": 1}, asAccepted, execution = some(physical))
+    record.finish(esCompleted, %*{"winner": 0}, %*{"0": 1})
+    let decision = parseJson(record.eventsJsonl().splitLines()[0])
+    check decision["executed_action"] == decision["attempts"][0]["parsed_action"]
+    check decision["execution"]["end_tick"].getInt() == 14
+    check decode(decision["execution"]["seat_controls_b64"].getStr()) ==
+      "\xff\x00\x7f\x03\x01\x02\x80\x00"
+    let invalid = episode()
+    expect ValueError:
+      invalid.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+        %*{"move": 1}, asAccepted, execution = some(ExecutionEvidence(
+          startTick: 12, endTick: 14, tickHz: 24, seatControlsBase64: encode("four"))))
