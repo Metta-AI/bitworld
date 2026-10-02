@@ -111,3 +111,40 @@ suite "private authoritative decision trajectories":
     let events = record.eventsJsonl().splitLines()
     check parseJson(events[0])["attempts"][0]["raw_response"].kind == JNull
     check parseJson(events[1])["attempts"][0]["decoder"].kind == JNull
+
+suite "served inference and engine binding":
+  test "request decoder agrees with served limits and preserves private response":
+    var attempt = newDecisionAttempt("a0", "requested-model", aoModel)
+    attempt.captureInferenceRequest(%*{"max_tokens": 32, "temperature": 0}, "system", "private-user")
+    let response = %*{"model": "actual-checkpoint", "stop_reason": "end_turn",
+      "usage": {"input_tokens": 12, "output_tokens": 4},
+      "inference_settings": {"max_output_tokens": 32, "temperature": 0,
+        "timeout_seconds": 45.0, "max_attempts": 9}}
+    attempt.captureInferenceResponse($response, 200, "call", "weights", "tokenizer", "template", 30, 2)
+    check attempt.decoder["timeout_seconds"].getFloat() == 30.0
+    check attempt.decoder["max_attempts"].getInt() == 2
+    check attempt.model.get() == "actual-checkpoint"
+    check attempt.rawResponse == response
+    check attempt.modelIdentity.get() == "weights"
+    let record = episode()
+    record.recordExecutedDecision("d0", "0", "engine-bound-policy", %*{"private": 1},
+      %*{"move": 2}, @[attempt], aoModel)
+    record.finish(esCompleted, %*{}, %*{})
+    let decision = parseJson(record.eventsJsonl().splitLines()[0])
+    check decision["attempts"][0]["policy"].getStr() == "engine-bound-policy"
+    check decision["attempts"][0]["parsed_action"] == decision["executed_action"]
+    var bad = response
+    bad["inference_settings"]["temperature"] = %1
+    expect ValueError:
+      attempt.captureInferenceResponse($bad, 200, "", "", "", "", 30, 2)
+
+  test "an engine fallback cannot select an accepted proposal":
+    var attempt = teacher()
+    attempt.accepted = true
+    let record = episode()
+    record.recordExecutedDecision("d0", "0", "actual-policy", %*{}, %*{"move": 9}, @[attempt], aoFallback)
+    record.finish(esCompleted, %*{}, %*{})
+    let decision = parseJson(record.eventsJsonl().splitLines()[0])
+    check decision["selected_attempt_id"].kind == JNull
+    check not decision["attempts"][0]["accepted"].getBool()
+    check decision["action_status"].getStr() == "fallback"

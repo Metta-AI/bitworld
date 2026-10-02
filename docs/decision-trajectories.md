@@ -40,3 +40,21 @@ log probabilities; paired sampling arrays must have equal lengths. No reader can
 verify a client assertion: platform attribution and checkpoint identity still
 require the trusted sidecar/archive join. Never place this envelope in public
 replays or spectator frames.
+
+### Native HTTP capture
+
+Call `captureInferenceRequest` before sending a model request, then
+`captureInferenceResponse` with the actual response body and identity headers.
+The latter preserves failed HTTP bodies and checks served decoding against the
+request. The game supplies its retry limit and effective deadline.
+
+After validating and applying an action, `recordExecutedDecision` binds captured
+attempts to the engine's policy seat. Engine fallbacks retain rejected attempts
+and never select them. Uncaptured external actions retain unknown origin.
+
+`tools/native_fixture.py` provides a bounded HTTP/WebSocket infrastructure
+fixture for game-owned `tools/test_native_trajectory.py` scripts. Install Python
+`websockets` to run it. It checks accepted replies, retries, fallbacks, private
+file permissions, and game-owned replay verification. Its separate provider
+archive records actual fixture HTTP calls; synthetic replies are not teacher
+data or model-performance evidence.
