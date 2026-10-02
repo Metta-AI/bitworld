@@ -40,3 +40,10 @@ log probabilities; paired sampling arrays must have equal lengths. No reader can
 verify a client assertion: platform attribution and checkpoint identity still
 require the trusted sidecar/archive join. Never place this envelope in public
 replays or spectator frames.
+
+For macro orders, supply `execution = some(ExecutionEvidence(...))` only after
+the physical ticks finish. `startTick` is inclusive and `endTick` exclusive;
+`tickHz` is positive. `seatControlsBase64` stores exactly four bytes per tick:
+signed move x, signed move y, signed aim turn, and unsigned action. The recorder
+checks the decoded length. This evidence stays separate from `executed_action`,
+which must still equal the engine-normalized selected proposal.
