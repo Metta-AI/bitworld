@@ -1,7 +1,7 @@
 ## Private decision evidence supplied by the authoritative game engine.
 ## These records are training artifacts, never spectator replay frames.
 
-import std/[json, options, os, strutils]
+import std/[base64, json, options, os, strutils]
 import runtime
 when defined(posix):
   import std/posix
@@ -27,6 +27,9 @@ type
     inputTokens*, outputTokens*: Option[int]
     promptTokenIds*, sampledTokenIds*: Option[seq[int]]
     behaviorLogprobs*: Option[seq[float]]
+  ExecutionEvidence* = object
+    startTick*, endTick*, tickHz*: int
+    seatControlsBase64*: string
   DecisionTrajectory* = ref object
     episodeId, seedFamily, game, gameVersion, sourceRevision: string
     decisions: seq[JsonNode]
@@ -136,9 +139,9 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   result.sampledTokenIds = evidenceOption(payload, "sampled_token_ids", seq[int])
   result.behaviorLogprobs = evidenceOption(payload, "behavior_logprobs", seq[float])
   result.parsedAction = newJNull()
-  if result.sampledTokenIds.isSome != result.behaviorLogprobs.isSome:
-    raise newException(ValueError, "sampled tokens and behavior log probabilities must be paired")
-  if result.sampledTokenIds.isSome and result.sampledTokenIds.get().len != result.behaviorLogprobs.get().len:
+  if result.behaviorLogprobs.isSome and result.sampledTokenIds.isNone:
+    raise newException(ValueError, "behavior log probabilities require sampled tokens")
+  if result.behaviorLogprobs.isSome and result.sampledTokenIds.get().len != result.behaviorLogprobs.get().len:
     raise newException(ValueError, "one behavior log probability is required per sampled token")
 
 proc newDecisionTrajectory*(episodeId, seedFamily, game, gameVersion,
@@ -153,7 +156,7 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
     observation: JsonNode, attempts: seq[DecisionAttempt],
     selectedAttemptId: Option[string], executedAction: JsonNode,
     status: ActionStatus, terminal = false,
-    fallbackOrigin = none(string)) =
+    fallbackOrigin = none(string), execution = none(ExecutionEvidence)) =
   ## Call AFTER the engine has validated and applied the selected proposal.
   if trajectory.finished:
     raise newException(ValueError, "cannot record after episode completion")
@@ -199,6 +202,16 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
     raise newException(ValueError, "accepted action needs one selected accepted attempt")
   if status == asFallback and fallbackOrigin.isNone:
     raise newException(ValueError, "fallback action needs its actual origin")
+  var encodedExecution = newJNull()
+  if execution.isSome:
+    let physical = execution.get()
+    if physical.startTick < 0 or physical.endTick <= physical.startTick or
+        physical.tickHz <= 0 or
+        decode(physical.seatControlsBase64).len != (physical.endTick - physical.startTick) * 4:
+      raise newException(ValueError, "execution needs four control bytes per tick and a positive tick rate")
+    encodedExecution = %*{"start_tick": physical.startTick, "end_tick": physical.endTick,
+      "tick_hz": physical.tickHz, "control_encoding": "i8-i8-i8-u8",
+      "seat_controls_b64": physical.seatControlsBase64}
   trajectory.decisions.add(copy(%*{
     "schema_version": "1", "event_type": "decision",
     "episode_id": trajectory.episodeId, "decision_id": decisionId,
@@ -208,7 +221,8 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
     "prompt": selectedPrompt,
     "attempts": encoded, "selected_attempt_id": jsonOption(selectedAttemptId),
     "executed_action": executedAction, "action_status": statusName(status),
-    "fallback_origin": jsonOption(fallbackOrigin), "terminal": terminal
+    "fallback_origin": jsonOption(fallbackOrigin), "terminal": terminal,
+    "execution": encodedExecution
   }))
 
 proc finish*(trajectory: DecisionTrajectory, status: EpisodeStatus,

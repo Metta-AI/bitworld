@@ -1,4 +1,4 @@
-import std/[json, options, os, strutils, unittest]
+import std/[base64, json, options, os, strutils, unittest]
 import bitworld/decision_trajectory
 
 proc teacher(): DecisionAttempt =
@@ -82,6 +82,11 @@ suite "private authoritative decision trajectories":
     check decoded.attemptEvidenceJson() == wire
     check not decoded.accepted
     check decoded.parsedAction.kind == JNull
+    wire["behavior_logprobs"] = newJNull()
+    let greedy = readAttemptEvidence(wire)
+    check greedy.sampledTokenIds.get() == @[3, 4]
+    check greedy.behaviorLogprobs.isNone
+    wire["behavior_logprobs"] = %*[-0.5, -0.3]
     wire["accepted"] = %true
     expect ValueError: discard readAttemptEvidence(wire)
     wire.delete("accepted")
@@ -111,6 +116,24 @@ suite "private authoritative decision trajectories":
     let events = record.eventsJsonl().splitLines()
     check parseJson(events[0])["attempts"][0]["raw_response"].kind == JNull
     check parseJson(events[1])["attempts"][0]["decoder"].kind == JNull
+
+  test "macro orders keep authoritative physical ticks separately from parsed action":
+    let record = episode()
+    let physical = ExecutionEvidence(startTick: 12, endTick: 14, tickHz: 24,
+      seatControlsBase64: encode("\xff\x00\x7f\x03\x01\x02\x80\x00"))
+    record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+      %*{"move": 1}, asAccepted, execution = some(physical))
+    record.finish(esCompleted, %*{"winner": 0}, %*{"0": 1})
+    let decision = parseJson(record.eventsJsonl().splitLines()[0])
+    check decision["executed_action"] == decision["attempts"][0]["parsed_action"]
+    check decision["execution"]["end_tick"].getInt() == 14
+    check decode(decision["execution"]["seat_controls_b64"].getStr()) ==
+      "\xff\x00\x7f\x03\x01\x02\x80\x00"
+    let invalid = episode()
+    expect ValueError:
+      invalid.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+        %*{"move": 1}, asAccepted, execution = some(ExecutionEvidence(
+          startTick: 12, endTick: 14, tickHz: 24, seatControlsBase64: encode("four"))))
 
 suite "served inference and engine binding":
   test "request decoder agrees with served limits and preserves private response":
