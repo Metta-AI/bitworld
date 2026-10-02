@@ -134,3 +134,21 @@ suite "private authoritative decision trajectories":
       invalid.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
         %*{"move": 1}, asAccepted, execution = some(ExecutionEvidence(
           startTick: 12, endTick: 14, tickHz: 24, seatControlsBase64: encode("four"))))
+
+  test "private corpus artifacts refuse existing files and symlinks":
+    let parent = getTempDir() / ("bitworld-private-corpus-" & $getCurrentProcessId())
+    let destination = parent / "manifest.json"
+    writePrivate(destination, "original private corpus")
+    defer:
+      removeFile(destination)
+      removeDir(parent)
+    check getFilePermissions(parent) == {fpUserRead, fpUserWrite, fpUserExec}
+    check getFilePermissions(destination) == {fpUserRead, fpUserWrite}
+    expect ValueError: writePrivate(destination, "replacement")
+    check readFile(destination) == "original private corpus"
+    when defined(posix):
+      let alias = parent / "alias.json"
+      createSymlink(destination, alias)
+      defer: removeFile(alias)
+      expect ValueError: writePrivate(alias, "replacement through symlink")
+      check readFile(destination) == "original private corpus"

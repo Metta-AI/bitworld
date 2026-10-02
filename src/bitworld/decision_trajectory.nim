@@ -239,7 +239,8 @@ proc finish*(trajectory: DecisionTrajectory, status: EpisodeStatus,
   })
   trajectory.finished = true
 
-proc writePrivate(destination, content: string) =
+proc writePrivate*(destination, content: string) =
+  ## Create a private corpus artifact atomically, refusing existing paths.
   let parent = destination.parentDir()
   if parent.len > 0 and not dirExists(parent):
     createDir(parent)
