@@ -21,6 +21,7 @@ def qualify(binary, config, choose_action, output, revision):
         folder = root / mode
         folder.mkdir(mode=0o700)
         calls = []
+        episode_id = str(uuid.uuid4())
 
         class Fixture(BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -61,7 +62,7 @@ def qualify(binary, config, choose_action, output, revision):
                "COGAME_SAVE_TRAJECTORY_URI": (folder / "trajectory.jsonl").as_uri(),
                "COWORLD_LLM_ENDPOINT": f"http://127.0.0.1:{server.server_port}",
                "COWORLD_LLM_MODEL": "fixture/synthetic", "COWORLD_LLM_TEMPERATURE": "0",
-               "COWORLD_EPISODE_ID": "fixture-" + mode, "COWORLD_GAME_VERSION": "source-fixture",
+               "COWORLD_EPISODE_ID": episode_id, "COWORLD_GAME_VERSION": "source-fixture",
                "COWORLD_SOURCE_REVISION": revision}
         with (folder / "game.log").open("w") as log:
             process = subprocess.Popen([binary], env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -125,7 +126,7 @@ def qualify(binary, config, choose_action, output, revision):
         report = subprocess.check_output([
             os.sys.executable, "tools/export_native_posttrain.py", "--replay", str(folder / "replay.json"),
             "--trajectory", str(folder / "trajectory.jsonl"), "--game-log", str(folder / "game.log"),
-            "--episode-id", "fixture-" + mode,
+            "--episode-id", episode_id,
         ])
         verified = json.loads(report)
         assert verified["full_schedule"] and verified["decisions"] == len(decisions) - 1
