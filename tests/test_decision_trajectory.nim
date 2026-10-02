@@ -1,4 +1,4 @@
-import std/[json, options, os, unittest]
+import std/[json, options, os, strutils, unittest]
 import bitworld/decision_trajectory
 
 proc teacher(): DecisionAttempt =
@@ -93,3 +93,21 @@ suite "private authoritative decision trajectories":
     wire["platform_call_id"] = newJNull()
     wire["model"] = %42
     expect ValueError: discard readAttemptEvidence(wire)
+
+  test "unanswered model and unknown external attempts have explicit JSON nulls":
+    let record = episode()
+    var unanswered = newDecisionAttempt("d0-model", "model", aoModel)
+    unanswered.prompt = %*[{"role": "user", "content": "private"}]
+    unanswered.request = %*{"model": "fixture"}
+    unanswered.rejectionReason = some("engine deadline")
+    record.recordDecision("d0", "0", %*{}, @[unanswered], none(string),
+      %*{"move": 1}, asFallback, fallbackOrigin = some("engine-scripted"))
+    var unknown = newDecisionAttempt("d1-human", "external", aoUnknown)
+    unknown.accepted = true
+    unknown.parsedAction = %*{"move": 2}
+    record.recordDecision("d1", "0", %*{}, @[unknown], some("d1-human"),
+      unknown.parsedAction, asAccepted, terminal = true)
+    record.finish(esCompleted, %*{"winner": 0}, %*{"0": 1})
+    let events = record.eventsJsonl().splitLines()
+    check parseJson(events[0])["attempts"][0]["raw_response"].kind == JNull
+    check parseJson(events[1])["attempts"][0]["decoder"].kind == JNull

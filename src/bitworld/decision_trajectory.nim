@@ -33,6 +33,13 @@ type
     summary: JsonNode
     finished: bool
 
+proc newDecisionAttempt*(attemptId, policy: string,
+    origin: AttemptOrigin): DecisionAttempt =
+  ## Every nullable JSON value has a JSON null, never an uninitialized pointer.
+  DecisionAttempt(attemptId: attemptId, policy: policy, origin: origin,
+    prompt: newJNull(), request: newJNull(), response: newJNull(),
+    rawResponse: newJNull(), parsedAction: newJNull(), decoder: newJNull())
+
 proc originName(origin: AttemptOrigin): string =
   ["model", "teacher", "fallback", "human", "unknown"][ord(origin)]
 
@@ -85,13 +92,13 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   ## Strict version-one wire reader. The game supplies parsedAction and accepted.
   if payload.kind != JObject:
     raise newException(ValueError, "private attempt evidence must be an object")
-  let expected = attemptEvidenceJson(DecisionAttempt())
+  let expected = attemptEvidenceJson(newDecisionAttempt("schema", "schema", aoUnknown))
   for key in expected.keys:
     if not payload.hasKey(key): raise newException(ValueError, "missing attempt field: " & key)
   for key in payload.keys:
     if not expected.hasKey(key): raise newException(ValueError, "unexpected player-owned field: " & key)
-  result.attemptId = evidenceValue(payload, "attempt_id", string)
-  result.policy = evidenceValue(payload, "policy", string)
+  result = newDecisionAttempt(evidenceValue(payload, "attempt_id", string),
+    evidenceValue(payload, "policy", string), aoUnknown)
   if result.attemptId.len == 0 or result.policy.len == 0:
     raise newException(ValueError, "attempt identity and policy are required")
   let origin = evidenceValue(payload, "origin", string)

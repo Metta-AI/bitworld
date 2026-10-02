@@ -28,6 +28,9 @@ not certify a game, a published image, runtime parity, or a stronger learner.
 
 ## Authenticated player evidence
 
+Construct attempts with `newDecisionAttempt(id, policy, origin)` before assigning
+evidence fields. Every absent JSON value starts as JSON null.
+
 Players serialize `DecisionAttempt.attemptEvidenceJson()` on a private,
 authenticated channel. Games read it with `readAttemptEvidence()`, then supply
 `accepted` and `parsedAction` after their production parser applies the action.
