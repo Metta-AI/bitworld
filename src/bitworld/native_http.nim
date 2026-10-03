@@ -10,6 +10,10 @@ import native_stop
 export httpheaders
 
 type
+  ArtifactHttpMethod* = enum
+    ahPut = "PUT", ahPost = "POST"
+  RequestPurpose = enum
+    rpInference, rpArtifact
   NativeHttpKind* = enum
     nhComplete, nhDeadline, nhInterrupted, nhTransportFailure
   NativeHttpResponse* = object
@@ -21,6 +25,7 @@ type
     error*: string
   Transfer = object
     deadline: MonoTime
+    purpose: RequestPurpose
     headerBytes, bodyBytes: string
 
 # The pinned Nim binding omits these existing libcurl options.
@@ -56,12 +61,13 @@ proc receiveBody(buffer: cstring, size, count: int, context: pointer): int {.cde
 proc checkTransfer(context: pointer, downloadTotal, downloaded,
     uploadTotal, uploaded: int64): cint {.cdecl.} =
   let transfer = cast[ptr Transfer](context)
-  if interruptionRequested() or getMonoTime() >= transfer.deadline: 1 else: 0
+  if (transfer.purpose == rpInference and interruptionRequested()) or
+      getMonoTime() >= transfer.deadline: 1 else: 0
 
-proc performNativePost*(url: string, headers: HttpHeaders, body: string,
-    deadline: MonoTime): NativeHttpResponse =
-  ## A caller shares one deadline across retries. Never reset it per attempt.
-  if interruptionRequested():
+proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
+    headers: HttpHeaders, body: string, deadline: MonoTime,
+    purpose: RequestPurpose): NativeHttpResponse =
+  if purpose == rpInference and interruptionRequested():
     result.kind = nhInterrupted
     return
   let remaining = (deadline - getMonoTime()).inNanoseconds
@@ -72,7 +78,7 @@ proc performNativePost*(url: string, headers: HttpHeaders, body: string,
   let handle = easy_init()
   doAssert handle != nil, "Cannot allocate native HTTP handle"
   var headerList: Pslist
-  var transfer = Transfer(deadline: deadline)
+  var transfer = Transfer(deadline: deadline, purpose: purpose)
   var oldMask, pipeMask, previousPending: Sigset
   doAssert sigemptyset(pipeMask) == 0
   doAssert sigaddset(pipeMask, SIGPIPE) == 0
@@ -86,7 +92,7 @@ proc performNativePost*(url: string, headers: HttpHeaders, body: string,
       doAssert appended != nil, "Cannot allocate native HTTP headers"
       headerList = appended
     requireCurl(handle.easy_setopt(OPT_URL, url.cstring))
-    requireCurl(handle.easy_setopt(OPT_POST, clong(1)))
+    requireCurl(handle.easy_setopt(OPT_CUSTOMREQUEST, ($httpMethod).cstring))
     requireCurl(handle.easy_setopt(OPT_POSTFIELDS, body.cstring))
     requireCurl(handle.easy_setopt(OPT_POSTFIELDSIZE, clong(body.len)))
     requireCurl(handle.easy_setopt(OPT_HTTPHEADER, headerList))
@@ -102,8 +108,8 @@ proc performNativePost*(url: string, headers: HttpHeaders, body: string,
     requireCurl(handle.easy_setopt(OptXferInfoFunction, checkTransfer))
     let started = getMonoTime()
     let finalRemaining = (deadline - started).inNanoseconds
-    if finalRemaining <= 0 or interruptionRequested():
-      result.kind = if interruptionRequested(): nhInterrupted else: nhDeadline
+    if finalRemaining <= 0 or (purpose == rpInference and interruptionRequested()):
+      result.kind = if purpose == rpInference and interruptionRequested(): nhInterrupted else: nhDeadline
       return
     let milliseconds = clong((finalRemaining + 999_999) div 1_000_000)
     requireCurl(handle.easy_setopt(OptTimeoutMs, milliseconds))
@@ -114,7 +120,7 @@ proc performNativePost*(url: string, headers: HttpHeaders, body: string,
     var status: clong
     requireCurl(handle.easy_getinfo(INFO_RESPONSE_CODE, status.addr))
     if status != 0: result.httpStatus = some(int(status))
-    if interruptionRequested(): result.kind = nhInterrupted
+    if purpose == rpInference and interruptionRequested(): result.kind = nhInterrupted
     elif code == E_OPERATION_TIMEOUTED or getMonoTime() >= deadline: result.kind = nhDeadline
     elif code == E_OK: result.kind = nhComplete
     else: result.kind = nhTransportFailure
@@ -132,3 +138,14 @@ proc performNativePost*(url: string, headers: HttpHeaders, body: string,
     doAssert pthread_sigmask(SIG_SETMASK, oldMask, discardedMask) == 0
   result.headerBytes = move transfer.headerBytes
   result.bodyBytes = move transfer.bodyBytes
+
+proc performNativePost*(url: string, headers: HttpHeaders, body: string,
+    deadline: MonoTime): NativeHttpResponse =
+  ## A caller shares one deadline across retries. Never reset it per attempt.
+  performOwnedRequest(url, ahPost, headers, body, deadline, rpInference)
+
+proc performArtifactUpload*(url: string, httpMethod: ArtifactHttpMethod,
+    headers: HttpHeaders, body: string, cleanupDeadline: MonoTime): NativeHttpResponse =
+  ## Checkpoint finalization has its own finite cleanup lifetime after inference stops.
+  ## No caller can disable interruption in the inference API.
+  performOwnedRequest(url, httpMethod, headers, body, cleanupDeadline, rpArtifact)
