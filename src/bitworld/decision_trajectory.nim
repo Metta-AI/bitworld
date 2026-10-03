@@ -166,7 +166,8 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
 
 proc newDecisionTrajectory*(episodeId, seedFamily, game, gameVersion,
     sourceRevision: string): DecisionTrajectory =
-  for value in [episodeId, seedFamily, game, gameVersion, sourceRevision]:
+  let runtimeGame = getEnv("COWORLD_GAME_NAME", game)
+  for value in [episodeId, seedFamily, runtimeGame, gameVersion, sourceRevision]:
     if value.len == 0:
       raise newException(ValueError, "trajectory identity and source/version pins are required")
   var imageDigest = none(string)
@@ -178,7 +179,7 @@ proc newDecisionTrajectory*(episodeId, seedFamily, game, gameVersion,
       if character notin {'0'..'9', 'a'..'f'}:
         raise newException(ValueError, "runtime engine image must be an immutable SHA256 digest")
     imageDigest = some(digest)
-  DecisionTrajectory(episodeId: episodeId, seedFamily: seedFamily, game: game,
+  DecisionTrajectory(episodeId: episodeId, seedFamily: seedFamily, game: runtimeGame,
     gameVersion: gameVersion, sourceRevision: sourceRevision, imageDigest: imageDigest)
 
 proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,

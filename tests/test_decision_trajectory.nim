@@ -12,6 +12,19 @@ proc episode(): DecisionTrajectory =
   newDecisionTrajectory("episode", "seed-family", "fixture", "v1", "source-sha")
 
 suite "private authoritative decision trajectories":
+  test "registered game identity is frozen before the first action":
+    putEnv("COWORLD_GAME_NAME", "registered-alias")
+    defer: delEnv("COWORLD_GAME_NAME")
+    let record = episode()
+    putEnv("COWORLD_GAME_NAME", "")
+    expect ValueError: discard episode()
+    record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+      %*{"move": 1}, asAccepted, terminal = true)
+    record.finish(esCompleted, %*{}, %*{})
+    let lines = record.eventsJsonl().splitLines()
+    check parseJson(lines[0])["game"].getStr() == "registered-alias"
+    check parseJson(lines[1])["game"].getStr() == "registered-alias"
+
   test "runtime engine image is validated and frozen before the first action":
     let digest = "sha256:" & repeat('a', 64)
     putEnv("COWORLD_GAME_IMAGE_DIGEST", digest)
