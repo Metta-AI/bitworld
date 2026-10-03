@@ -2,7 +2,7 @@
 ## No provider parsing or game acceptance occurs here. All received bytes survive
 ## timeout/interruption; the handle is cleaned before the result can be sealed.
 
-import std/[monotimes, options, posix, times]
+import std/[monotimes, options, os, posix, times]
 import libcurl except Option
 import webby/httpheaders
 import native_stop
@@ -99,6 +99,8 @@ proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
     requireCurl(handle.easy_setopt(OPT_FOLLOWLOCATION, clong(0)))
     requireCurl(handle.easy_setopt(OptProtocols, clong(3))) # HTTP and HTTPS only.
     requireCurl(handle.easy_setopt(OPT_NOSIGNAL, clong(1)))
+    if existsEnv("SSL_CERT_FILE"):
+      requireCurl(handle.easy_setopt(OPT_CAINFO, getEnv("SSL_CERT_FILE").cstring))
     requireCurl(handle.easy_setopt(OPT_HEADERDATA, transfer.addr))
     requireCurl(handle.easy_setopt(OPT_HEADERFUNCTION, receiveHeaders))
     requireCurl(handle.easy_setopt(OPT_WRITEDATA, transfer.addr))
