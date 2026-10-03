@@ -203,6 +203,34 @@ docker build \
 coworld certify among_them/coworld_manifest.json
 ```
 
+## Native Coworld HTTP lifecycle
+
+`bitworld/native_http.performNativePost(url, headers, body, deadline)` owns one
+libcurl handle until cleanup. Pass the same absolute `MonoTime` deadline across
+attempts. It returns exact received header/body bytes, observed status, actual
+transfer completeness, and a typed completion/deadline/interruption/failure kind.
+A complete transfer arriving after the deadline remains ineligible for selection.
+
+Call `bitworld/native_stop.installNativeStopHandlers()` before starting threads.
+SIGTERM and SIGINT only set a lock-free stop flag. Owned cleanup can call
+`requestNativeStop()` to set the same irreversible intent. The engine must stop accepting
+new decisions, join owned work, and seal a truncated private trajectory afterward.
+Provider parsing, identity-header validation, action acceptance, and sealing belong
+to the game. Raw byte fields never belong in public replay frames.
+
+Private attempts store nullable `response_body_b64`, `response_headers_b64`,
+`response_complete`, and `http_status`. Missing transport evidence stays null;
+scripted teachers must not populate serving fields. Base64 retains partial and
+non-UTF8 bodies plus duplicate/interim/trailer headers. Existing normalized header
+maps serve identity lookup; they do not replace the received header bytes.
+
+The real HTTP fixture uses no credentials or provider calls:
+
+```sh
+nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/native-http-probe tests/support/native_http_probe.nim
+python3 tests/test_native_http.py /tmp/native-http-probe
+```
+
 ## Deploying to ghcr.io
 
 Games and bots are deployed as Docker images to GitHub Container Registry.

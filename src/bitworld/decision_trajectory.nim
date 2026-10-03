@@ -27,7 +27,9 @@ type
     platformCallId*, rejectionReason*, modelIdentity*, tokenizerIdentity*: Option[string]
     chatTemplateSha256*, stopReason*: Option[string]
     responseHeaders*: Option[Table[string, string]]
-    providerRequestId*: Option[string]
+    providerRequestId*, responseBodyB64*, responseHeadersB64*: Option[string]
+    responseComplete*: Option[bool]
+    httpStatus*: Option[int]
     latencyMs*: Option[float]
     inputTokens*, outputTokens*: Option[int]
     promptTokenIds*, sampledTokenIds*: Option[seq[int]]
@@ -69,6 +71,10 @@ proc attemptEvidenceJson*(attempt: DecisionAttempt): JsonNode =
     "response": attempt.response, "raw_response": attempt.rawResponse,
     "response_headers": jsonOption(attempt.responseHeaders),
     "provider_request_id": jsonOption(attempt.providerRequestId),
+    "response_body_b64": jsonOption(attempt.responseBodyB64),
+    "response_headers_b64": jsonOption(attempt.responseHeadersB64),
+    "response_complete": jsonOption(attempt.responseComplete),
+    "http_status": jsonOption(attempt.httpStatus),
     "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
     "rejection_reason": jsonOption(attempt.rejectionReason),
     "model_identity": jsonOption(attempt.modelIdentity),
@@ -86,6 +92,9 @@ proc evidenceValue[T](payload: JsonNode, key: string, _: typedesc[T]): T =
   when T is string:
     if value.kind != JString: raise newException(ValueError, key & " must be a string")
     result = value.getStr()
+  elif T is bool:
+    if value.kind != JBool: raise newException(ValueError, key & " must be a boolean")
+    result = value.getBool()
   elif T is int:
     if value.kind != JInt: raise newException(ValueError, key & " must be an integer")
     result = value.getInt()
@@ -106,8 +115,10 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   if payload.kind != JObject:
     raise newException(ValueError, "private attempt evidence must be an object")
   let expected = attemptEvidenceJson(newDecisionAttempt("schema", "schema", aoUnknown))
+  const optionalTransport = ["response_body_b64", "response_headers_b64", "response_complete", "http_status"]
   for key in expected.keys:
-    if not payload.hasKey(key): raise newException(ValueError, "missing attempt field: " & key)
+    if not payload.hasKey(key) and key notin optionalTransport:
+      raise newException(ValueError, "missing attempt field: " & key)
   for key in payload.keys:
     if not expected.hasKey(key): raise newException(ValueError, "unexpected player-owned field: " & key)
   result = newDecisionAttempt(evidenceValue(payload, "attempt_id", string),
@@ -136,6 +147,27 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
       headers[name] = value.getStr()
     result.responseHeaders = some(headers)
   result.providerRequestId = evidenceOption(payload, "provider_request_id", string)
+  if payload.hasKey("response_body_b64"):
+    result.responseBodyB64 = evidenceOption(payload, "response_body_b64", string)
+    if result.responseBodyB64.isSome:
+      let bytes = result.responseBodyB64.get()
+      let decoded = decode(bytes)
+      if encode(decoded) != bytes:
+        raise newException(ValueError, "response_body_b64 must be canonical base64")
+      if result.rawResponse.kind == JString and result.rawResponse.getStr() != decoded:
+        raise newException(ValueError, "raw_response differs from received response_body_b64")
+  if payload.hasKey("response_headers_b64"):
+    result.responseHeadersB64 = evidenceOption(payload, "response_headers_b64", string)
+    if result.responseHeadersB64.isSome:
+      let bytes = result.responseHeadersB64.get()
+      if encode(decode(bytes)) != bytes:
+        raise newException(ValueError, "response_headers_b64 must be canonical base64")
+  if payload.hasKey("response_complete"):
+    result.responseComplete = evidenceOption(payload, "response_complete", bool)
+  if payload.hasKey("http_status"):
+    result.httpStatus = evidenceOption(payload, "http_status", int)
+    if result.httpStatus.isSome and result.httpStatus.get() notin 100 .. 599:
+      raise newException(ValueError, "http_status must be a received HTTP status")
   result.decoder = copy(payload["decoder"])
   result.model = evidenceOption(payload, "model", string)
   result.platformCallId = evidenceOption(payload, "platform_call_id", string)
@@ -217,6 +249,10 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
       "response": attempt.response, "raw_response": attempt.rawResponse,
       "response_headers": jsonOption(attempt.responseHeaders),
       "provider_request_id": jsonOption(attempt.providerRequestId),
+      "response_body_b64": jsonOption(attempt.responseBodyB64),
+      "response_headers_b64": jsonOption(attempt.responseHeadersB64),
+      "response_complete": jsonOption(attempt.responseComplete),
+      "http_status": jsonOption(attempt.httpStatus),
       "parsed_action": attempt.parsedAction, "accepted": attempt.accepted,
       "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
       "rejection_reason": jsonOption(attempt.rejectionReason),
