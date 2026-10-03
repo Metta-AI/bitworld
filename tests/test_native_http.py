@@ -6,10 +6,11 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 probe = Path(sys.argv[1]).resolve()
-for mode in ("complete", "empty", "partial", "headers", "unobserved", "interrupted"):
+for mode in ("complete", "empty", "partial", "headers", "unobserved", "interrupted", "partial-sigterm", "partial-sigint"):
     entered = threading.Event()
     release = threading.Event()
 
@@ -31,7 +32,7 @@ for mode in ("complete", "empty", "partial", "headers", "unobserved", "interrupt
                 self.wfile.write(b"\x00\xffok")
                 self.wfile.flush()
                 return
-            if mode == "partial":
+            if mode in {"partial", "partial-sigterm", "partial-sigint"}:
                 self.wfile.write(b"\xe2\x82")
                 self.wfile.flush()
             entered.set()
@@ -44,13 +45,17 @@ for mode in ("complete", "empty", "partial", "headers", "unobserved", "interrupt
         owner = threading.Thread(target=server.serve_forever)
         owner.start()
         process = subprocess.Popen([str(probe), f"http://127.0.0.1:{server.server_port}/v1/messages",
-                                    "5000" if mode == "interrupted" else "250"]
+                                    "5000" if mode in {"interrupted", "partial-sigterm", "partial-sigint"} else "250"]
                                    + (["repeat"] if mode not in {"complete", "empty"} else []),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
-            if mode == "interrupted":
+            if mode in {"interrupted", "partial-sigterm", "partial-sigint"}:
                 assert entered.wait(3), "owned request never started"
-                process.send_signal(signal.SIGTERM)
+                if mode.startswith("partial-"):
+                    # Let the flushed bytes reach the owned callback before signalling.
+                    # Exact received-byte assertions below fail if they were not observed.
+                    time.sleep(0.2)
+                process.send_signal(signal.SIGINT if mode == "partial-sigint" else signal.SIGTERM)
             stdout, stderr = process.communicate(timeout=4)
             assert process.returncode == 0, stderr
             result = json.loads(stdout)
@@ -61,9 +66,9 @@ for mode in ("complete", "empty", "partial", "headers", "unobserved", "interrupt
                 assert result["kind"] == "nhComplete" and result["complete"]
                 assert result["status"] == 200 and body == (b"\x00\xffok" if mode == "complete" else b"")
             else:
-                assert result["kind"] == ("nhInterrupted" if mode == "interrupted" else "nhDeadline")
+                assert result["kind"] == ("nhInterrupted" if mode in {"interrupted", "partial-sigterm", "partial-sigint"} else "nhDeadline")
                 assert not result["complete"]
-                assert body == (b"\xe2\x82" if mode == "partial" else b"")
+                assert body == (b"\xe2\x82" if mode in {"partial", "partial-sigterm", "partial-sigint"} else b"")
                 assert result["status"] == (None if mode in {"unobserved", "interrupted"} else 200)
             if mode not in {"unobserved", "interrupted"}:
                 assert headers.count(b"X-Fixture: ") == 2
