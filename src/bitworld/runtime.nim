@@ -104,9 +104,9 @@ proc readCogameUri*(value, source: string): string =
     return readFile(path)
 
   if value.isHttpCogameUri():
-    let
-      client = newCurlPool(1)
-      response = client.get(value)
+    let client = newCurlPool(1)
+    defer: client.close()
+    let response = client.get(value)
     if response.code < 200 or response.code >= 300:
       raise newException(
         IOError,
@@ -206,10 +206,10 @@ proc writeCogameUri*(
     return
 
   if value.isHttpCogameUri():
-    let
-      client = newCurlPool(1)
-      headers = @[("Content-Type", contentType)]
-      response = client.put(value, headers, data)
+    let client = newCurlPool(1)
+    defer: client.close()
+    let headers = @[("Content-Type", contentType)]
+    let response = client.put(value, headers, data)
     if response.code < 200 or response.code >= 300:
       raise newException(
         IOError,
