@@ -6,6 +6,7 @@ installNativeStopHandlers()
 let deadline = getMonoTime() + initDuration(milliseconds = args[1].parseBiggestInt())
 let response = performNativePost(args[0], @[("content-type", "application/json")],
   "{\"fixture\":true}", deadline)
+doAssert response.responseReaderJoined == some(true)
 echo $(%*{"kind": $response.kind, "status": (if response.httpStatus.isSome: %response.httpStatus.get() else: newJNull()),
   "headers_b64": encode(response.headerBytes), "body_b64": encode(response.bodyBytes),
   "complete": response.transferComplete,
@@ -15,6 +16,7 @@ if args.len == 3:
     "{\"fixture\":true}", deadline)
   doAssert repeated.kind == response.kind
   doAssert repeated.latencyMs.isNone and repeated.httpStatus.isNone
+  doAssert repeated.responseReaderJoined.isNone
   doAssert repeated.bodyBytes.len == 0 and repeated.headerBytes.len == 0
 requestNativeStop()
 doAssert interruptionRequested()
@@ -23,3 +25,5 @@ let stopped = performNativePost(args[0], @[("content-type", "application/json")]
 doAssert stopped.kind == nhInterrupted
 doAssert stopped.latencyMs.isNone and stopped.httpStatus.isNone
 doAssert stopped.bodyBytes.len == 0 and stopped.headerBytes.len == 0
+
+doAssert stopped.responseReaderJoined.isNone

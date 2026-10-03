@@ -28,7 +28,7 @@ type
     chatTemplateSha256*, stopReason*: Option[string]
     responseHeaders*: Option[Table[string, string]]
     providerRequestId*, responseBodyB64*, responseHeadersB64*: Option[string]
-    responseComplete*: Option[bool]
+    responseComplete*, responseReaderJoined*: Option[bool]
     httpStatus*: Option[int]
     latencyMs*: Option[float]
     inputTokens*, outputTokens*: Option[int]
@@ -74,6 +74,7 @@ proc attemptEvidenceJson*(attempt: DecisionAttempt): JsonNode =
     "response_body_b64": jsonOption(attempt.responseBodyB64),
     "response_headers_b64": jsonOption(attempt.responseHeadersB64),
     "response_complete": jsonOption(attempt.responseComplete),
+    "response_reader_joined": jsonOption(attempt.responseReaderJoined),
     "http_status": jsonOption(attempt.httpStatus),
     "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
     "rejection_reason": jsonOption(attempt.rejectionReason),
@@ -115,7 +116,7 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   if payload.kind != JObject:
     raise newException(ValueError, "private attempt evidence must be an object")
   let expected = attemptEvidenceJson(newDecisionAttempt("schema", "schema", aoUnknown))
-  const optionalTransport = ["response_body_b64", "response_headers_b64", "response_complete", "http_status"]
+  const optionalTransport = ["response_body_b64", "response_headers_b64", "response_complete", "http_status", "response_reader_joined"]
   for key in expected.keys:
     if not payload.hasKey(key) and key notin optionalTransport:
       raise newException(ValueError, "missing attempt field: " & key)
@@ -164,6 +165,8 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
         raise newException(ValueError, "response_headers_b64 must be canonical base64")
   if payload.hasKey("response_complete"):
     result.responseComplete = evidenceOption(payload, "response_complete", bool)
+  if payload.hasKey("response_reader_joined"):
+    result.responseReaderJoined = evidenceOption(payload, "response_reader_joined", bool)
   if payload.hasKey("http_status"):
     result.httpStatus = evidenceOption(payload, "http_status", int)
     if result.httpStatus.isSome and result.httpStatus.get() notin 100 .. 599:
@@ -252,6 +255,7 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
       "response_body_b64": jsonOption(attempt.responseBodyB64),
       "response_headers_b64": jsonOption(attempt.responseHeadersB64),
       "response_complete": jsonOption(attempt.responseComplete),
+      "response_reader_joined": jsonOption(attempt.responseReaderJoined),
       "http_status": jsonOption(attempt.httpStatus),
       "parsed_action": attempt.parsedAction, "accepted": attempt.accepted,
       "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
