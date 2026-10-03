@@ -3,9 +3,9 @@ name: Private decision trajectories
 on:
   push:
     branches: [master]
-    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, src/bitworld/native_http.nim, src/bitworld/native_stop.nim, src/bitworld/artifact_runtime.nim, tests/test_artifact_http.py, tests/support/artifact_http_probe.nim, tests/test_decision_trajectory.nim, tests/test_native_http.py, tests/support/native_http_probe.nim, .github/workflows/decision-trajectories.yml]
+    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, src/bitworld/native_http.nim, src/bitworld/native_stop.nim, src/bitworld/artifact_runtime.nim, tests/test_artifact_http.py, tests/support/artifact_http_probe.nim, tests/test_native_https.py, tests/support/native_https_probe.nim, tests/test_decision_trajectory.nim, tests/test_native_http.py, tests/support/native_http_probe.nim, .github/workflows/decision-trajectories.yml]
   pull_request:
-    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, src/bitworld/native_http.nim, src/bitworld/native_stop.nim, src/bitworld/artifact_runtime.nim, tests/test_artifact_http.py, tests/support/artifact_http_probe.nim, tests/test_decision_trajectory.nim, tests/test_native_http.py, tests/support/native_http_probe.nim, .github/workflows/decision-trajectories.yml]
+    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, src/bitworld/native_http.nim, src/bitworld/native_stop.nim, src/bitworld/artifact_runtime.nim, tests/test_artifact_http.py, tests/support/artifact_http_probe.nim, tests/test_native_https.py, tests/support/native_https_probe.nim, tests/test_decision_trajectory.nim, tests/test_native_http.py, tests/support/native_http_probe.nim, .github/workflows/decision-trajectories.yml]
 
 jobs:
   test:
@@ -41,3 +41,7 @@ jobs:
         run: |
           nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/artifact-http-probe tests/support/artifact_http_probe.nim
           python3 tests/test_artifact_http.py /tmp/artifact-http-probe
+      - name: Verify configured HTTPS trust and hostname validation
+        run: |
+          nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/native-https-probe tests/support/native_https_probe.nim
+          python3 tests/test_native_https.py /tmp/native-https-probe
