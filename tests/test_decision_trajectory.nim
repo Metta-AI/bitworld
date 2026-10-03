@@ -1,4 +1,4 @@
-import std/[base64, json, options, os, strutils, unittest]
+import std/[base64, json, options, os, strutils, tables, unittest]
 import bitworld/decision_trajectory
 
 proc teacher(): DecisionAttempt =
@@ -12,6 +12,20 @@ proc episode(): DecisionTrajectory =
   newDecisionTrajectory("episode", "seed-family", "fixture", "v1", "source-sha")
 
 suite "private authoritative decision trajectories":
+  test "runtime engine image is validated and frozen before the first action":
+    let digest = "sha256:" & repeat('a', 64)
+    putEnv("COWORLD_GAME_IMAGE_DIGEST", digest)
+    defer: delEnv("COWORLD_GAME_IMAGE_DIGEST")
+    let record = episode()
+    putEnv("COWORLD_GAME_IMAGE_DIGEST", "mutable-image:latest")
+    expect ValueError: discard episode()
+    record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+      %*{"move": 1}, asAccepted, terminal = true)
+    record.finish(esCompleted, %*{}, %*{})
+    let lines = record.eventsJsonl().splitLines()
+    check parseJson(lines[0])["image_digest"].getStr() == digest
+    check parseJson(lines[1])["image_digest"].getStr() == digest
+
   test "complete engine action and teacher evidence round-trip privately":
     let record = episode()
     let observation = %*{"private_card": "secret"}
@@ -70,6 +84,9 @@ suite "private authoritative decision trajectories":
     var attempt = teacher()
     attempt.origin = aoModel
     attempt.platformCallId = some("00000000-0000-4000-8000-000000000001")
+    attempt.responseHeaders = some({"request-id": "actual-provider-id",
+      "X-Softmax-Llm-Call-Id": attempt.platformCallId.get()}.toTable())
+    attempt.providerRequestId = some("actual-provider-id")
     attempt.modelIdentity = some("checkpoint-sha")
     attempt.tokenizerIdentity = some("tokenizer-sha")
     attempt.chatTemplateSha256 = some("template-sha")
@@ -82,6 +99,10 @@ suite "private authoritative decision trajectories":
     check decoded.attemptEvidenceJson() == wire
     check not decoded.accepted
     check decoded.parsedAction.kind == JNull
+    check decoded.providerRequestId.get() == "actual-provider-id"
+    check decoded.responseHeaders.get()["request-id"] == "actual-provider-id"
+    attempt.responseHeaders.get()["request-id"] = "later mutation"
+    check decoded.responseHeaders.get()["request-id"] == "actual-provider-id"
     wire["behavior_logprobs"] = newJNull()
     let greedy = readAttemptEvidence(wire)
     check greedy.sampledTokenIds.get() == @[3, 4]
@@ -97,6 +118,22 @@ suite "private authoritative decision trajectories":
     expect ValueError: discard readAttemptEvidence(wire)
     wire["platform_call_id"] = newJNull()
     wire["model"] = %42
+    expect ValueError: discard readAttemptEvidence(wire)
+
+  test "actual response headers survive authoritative episode export":
+    let record = episode()
+    var attempt = teacher()
+    attempt.responseHeaders = some({"request-id": "provider-real",
+      "X-Trace-Header": "private value"}.toTable())
+    attempt.providerRequestId = some("provider-real")
+    record.recordDecision("d0", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted, terminal = true)
+    record.finish(esCompleted, %*{}, %*{})
+    let encoded = parseJson(record.eventsJsonl().splitLines()[0])["attempts"][0]
+    check encoded["response_headers"]["X-Trace-Header"].getStr() == "private value"
+    check encoded["provider_request_id"].getStr() == "provider-real"
+    let wire = attempt.attemptEvidenceJson()
+    wire["response_headers"] = %*{"request-id": 42}
     expect ValueError: discard readAttemptEvidence(wire)
 
   test "unanswered model and unknown external attempts have explicit JSON nulls":
