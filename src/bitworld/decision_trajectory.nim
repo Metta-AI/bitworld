@@ -1,7 +1,7 @@
 ## Private decision evidence supplied by the authoritative game engine.
 ## These records are training artifacts, never spectator replay frames.
 
-import std/[base64, json, options, os, strutils]
+import std/[base64, json, options, os, strutils, tables]
 import runtime
 when defined(posix):
   import std/posix
@@ -26,6 +26,8 @@ type
     accepted*: bool
     platformCallId*, rejectionReason*, modelIdentity*, tokenizerIdentity*: Option[string]
     chatTemplateSha256*, stopReason*: Option[string]
+    responseHeaders*: Option[Table[string, string]]
+    providerRequestId*: Option[string]
     latencyMs*: Option[float]
     inputTokens*, outputTokens*: Option[int]
     promptTokenIds*, sampledTokenIds*: Option[seq[int]]
@@ -35,6 +37,7 @@ type
     seatControlsBase64*: string
   DecisionTrajectory* = ref object
     episodeId, seedFamily, game, gameVersion, sourceRevision: string
+    imageDigest: Option[string]
     decisions: seq[JsonNode]
     summary: JsonNode
     finished: bool
@@ -64,6 +67,8 @@ proc attemptEvidenceJson*(attempt: DecisionAttempt): JsonNode =
     "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
     "prompt": attempt.prompt, "request": attempt.request,
     "response": attempt.response, "raw_response": attempt.rawResponse,
+    "response_headers": jsonOption(attempt.responseHeaders),
+    "provider_request_id": jsonOption(attempt.providerRequestId),
     "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
     "rejection_reason": jsonOption(attempt.rejectionReason),
     "model_identity": jsonOption(attempt.modelIdentity),
@@ -121,6 +126,16 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   result.request = copy(payload["request"])
   result.response = copy(payload["response"])
   result.rawResponse = copy(payload["raw_response"])
+  if payload["response_headers"].kind != JNull:
+    if payload["response_headers"].kind != JObject:
+      raise newException(ValueError, "response_headers must be an object")
+    var headers = initTable[string, string]()
+    for name, value in payload["response_headers"]:
+      if value.kind != JString:
+        raise newException(ValueError, "response header values must be strings")
+      headers[name] = value.getStr()
+    result.responseHeaders = some(headers)
+  result.providerRequestId = evidenceOption(payload, "provider_request_id", string)
   result.decoder = copy(payload["decoder"])
   result.model = evidenceOption(payload, "model", string)
   result.platformCallId = evidenceOption(payload, "platform_call_id", string)
@@ -154,8 +169,17 @@ proc newDecisionTrajectory*(episodeId, seedFamily, game, gameVersion,
   for value in [episodeId, seedFamily, game, gameVersion, sourceRevision]:
     if value.len == 0:
       raise newException(ValueError, "trajectory identity and source/version pins are required")
+  var imageDigest = none(string)
+  if existsEnv("COWORLD_GAME_IMAGE_DIGEST"):
+    let digest = getEnv("COWORLD_GAME_IMAGE_DIGEST")
+    if digest.len != 71 or not digest.startsWith("sha256:"):
+      raise newException(ValueError, "runtime engine image must be an immutable SHA256 digest")
+    for character in digest[7 .. ^1]:
+      if character notin {'0'..'9', 'a'..'f'}:
+        raise newException(ValueError, "runtime engine image must be an immutable SHA256 digest")
+    imageDigest = some(digest)
   DecisionTrajectory(episodeId: episodeId, seedFamily: seedFamily, game: game,
-    gameVersion: gameVersion, sourceRevision: sourceRevision)
+    gameVersion: gameVersion, sourceRevision: sourceRevision, imageDigest: imageDigest)
 
 proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
     observation: JsonNode, attempts: seq[DecisionAttempt],
@@ -190,6 +214,8 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
       "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
       "prompt": attempt.prompt, "request": attempt.request,
       "response": attempt.response, "raw_response": attempt.rawResponse,
+      "response_headers": jsonOption(attempt.responseHeaders),
+      "provider_request_id": jsonOption(attempt.providerRequestId),
       "parsed_action": attempt.parsedAction, "accepted": attempt.accepted,
       "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
       "rejection_reason": jsonOption(attempt.rejectionReason),
@@ -223,6 +249,7 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
     "episode_id": trajectory.episodeId, "decision_id": decisionId,
     "decision_index": trajectory.decisions.len, "game": trajectory.game,
     "game_version": trajectory.gameVersion, "source_revision": trajectory.sourceRevision,
+    "image_digest": jsonOption(trajectory.imageDigest),
     "seat": seat, "visibility": "private", "observation": observation,
     "prompt": selectedPrompt,
     "attempts": encoded, "selected_attempt_id": jsonOption(selectedAttemptId),
@@ -240,6 +267,7 @@ proc finish*(trajectory: DecisionTrajectory, status: EpisodeStatus,
     "episode_id": trajectory.episodeId, "seed_family": trajectory.seedFamily,
     "game": trajectory.game, "game_version": trajectory.gameVersion,
     "source_revision": trajectory.sourceRevision,
+    "image_digest": jsonOption(trajectory.imageDigest),
     "status": ["completed", "truncated", "failed"][ord(status)],
     "outcome": outcome, "participant_outcomes": participantOutcomes
   })
