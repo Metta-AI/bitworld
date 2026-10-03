@@ -2,6 +2,7 @@
 ## owns receive. Sends and libcurl calls are serialized without a hidden reader.
 import std/[atomics, base64, locks, monotimes, os, posix, sequtils, sha1, strutils, sysrand,
   times, unicode, uri]
+from system/ansi_c import c_malloc, c_free
 import libcurl except Option
 import native_stop
 
@@ -19,7 +20,10 @@ type
     handle: PCurl
     socket: cint
     ioLock, sendLock: Lock
-    incoming, fragments, pending: string
+    incoming, fragments: string
+    # Writer ownership may move between joined threads; Nim thread heaps cannot.
+    pending: ptr UncheckedArray[byte]
+    pendingLength, pendingOffset: int
     fragmentOpcode: int
     pongState: Atomic[PongState]
     pongData: string
@@ -117,25 +121,36 @@ proc receiveBytes(ws: NativeWebSocket, deadline: MonoTime,
     let ready = ws.waitSocket(POLLIN, deadline, purpose)
     if ready.kind != wsReady: return ready
 
+proc installPending(ws: NativeWebSocket, data: string) =
+  doAssert ws.pendingLength == 0
+  ws.pending = cast[ptr UncheckedArray[byte]](c_malloc(csize_t(data.len)))
+  doAssert ws.pending != nil, "WebSocket frame allocation failed"
+  ws.pendingLength = data.len
+  copyMem(ws.pending, data[0].unsafeAddr, data.len)
+
 proc flushPending(ws: NativeWebSocket, deadline: MonoTime,
     purpose: IoPurpose): WebSocketResult =
-  while ws.pending.len > 0:
+  while ws.pendingOffset < ws.pendingLength:
     if interrupted(purpose): return WebSocketResult(kind: wsInterrupted)
     if getMonoTime() >= deadline: return WebSocketResult(kind: wsDeadline)
     var sent: csize_t
     acquire(ws.ioLock)
     var code: cint
     withBlockedPipe:
-      code = curlSend(ws.handle, ws.pending[0].addr,
-        csize_t(ws.pending.len), sent.addr)
+      code = curlSend(ws.handle, ws.pending[ws.pendingOffset].addr,
+        csize_t(ws.pendingLength - ws.pendingOffset), sent.addr)
     release(ws.ioLock)
     if code == 0:
-      if sent > 0: ws.pending.delete(0 .. int(sent) - 1)
+      ws.pendingOffset += int(sent)
     elif code != CurlAgain:
       return WebSocketResult(kind: wsFailure, error: "WebSocket send failed")
-    if ws.pending.len > 0:
+    if ws.pendingOffset < ws.pendingLength:
       let ready = ws.waitSocket(POLLOUT, deadline, purpose)
       if ready.kind != wsReady: return ready
+  c_free(ws.pending)
+  ws.pending = nil
+  ws.pendingLength = 0
+  ws.pendingOffset = 0
   if ws.pongState.load() == psQueued: ws.pongState.store(psSent)
   WebSocketResult(kind: wsReady)
 
@@ -173,7 +188,7 @@ proc sendFrame(ws: NativeWebSocket, opcode: int, data: string,
     for value in mask: frame.add char(value)
     for index, value in data:
       frame.add char(ord(value) xor int(mask[index mod 4]))
-    ws.pending = move(frame)
+    ws.installPending(frame)
     if opcode == 10: ws.pongState.store(psQueued)
     return ws.flushPending(deadline, purpose)
   finally:
@@ -280,6 +295,10 @@ proc closeNativeWebSocket*(ws: NativeWebSocket) =
   doAssert not ws.closed, "Native WebSocket already closed"
   ws.closed = true
   easy_cleanup(ws.handle)
+  c_free(ws.pending)
+  ws.pending = nil
+  ws.pendingLength = 0
+  ws.pendingOffset = 0
   deinitLock(ws.ioLock)
   deinitLock(ws.sendLock)
 
@@ -334,9 +353,10 @@ proc connectNativeWebSocket*(url: string, deadline: MonoTime,
     if parsed.port.len > 0: host.add ":" & parsed.port
     var path = if parsed.path.len == 0: "/" else: parsed.path
     if parsed.query.len > 0: path.add "?" & parsed.query
-    ws.pending = "GET " & path & " HTTP/1.1\r\nHost: " & host &
+    let upgradeRequest = "GET " & path & " HTTP/1.1\r\nHost: " & host &
       "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " & key &
       "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    ws.installPending(upgradeRequest)
     let sent = ws.flushPending(deadline, ipPlayer)
     if sent.kind != wsReady: return WebSocketConnection(kind: sent.kind, error: sent.error)
     var endHeaders = ws.incoming.find("\r\n\r\n")
