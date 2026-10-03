@@ -162,9 +162,17 @@ def echo_many(connection):
         connection.sendall(frame(str(index).encode()))
 rows = run_case('concurrent-reader-writer', 'concurrent', echo_many)
 assert rows[1]['kind'] == 'wsReady' and rows[1]['messages'] == 100
-started = time.monotonic()
+def alternate_owners(connection):
+    for index in range(20):
+        assert client_frame(connection) == (1, b'x' * 128)
+        assert client_frame(connection) == (1, b'stopped')
+        connection.sendall(frame(b'joined-ping', opcode=9))
+        assert client_frame(connection) == (10, b'joined-ping')
+        connection.sendall(frame(b'received'))
+rows = run_case('alternating-exited-worker-main-stop-pong', 'alternating', alternate_owners)
+assert rows[1]['kind'] == 'wsReady' and rows[1]['messages'] == 20
 rows = run_case('upgrade-absolute-deadline', 'normal', lambda connection: None, stall=True)
-assert rows[0]['connect'] == 'wsDeadline' and time.monotonic() - started < 1
+assert rows[0]['connect'] == 'wsDeadline' and rows[0]['elapsed_ms'] < 1000
 
 def pong_after_timeout(connection):
     prefix = exact(connection, 1)
@@ -184,6 +192,8 @@ def partial_send(connection):
 rows = run_case('partial-send-flush-before-stop', 'partial-send', partial_send)
 assert rows[1]['kind'] == 'wsDeadline' and rows[2]['kind'] == 'wsReady'
 assert rows[3]['data'] == 'evidence_received'
+rows = run_case('partial-exited-worker-main-cleanup', 'partial-exited-worker', partial_send)
+assert rows[1]['kind'] == 'wsReady' and rows[2]['data'] == 'evidence_received'
 with tempfile.TemporaryDirectory(prefix='native-websocket-tls-', dir=Path(PROBE).parent) as directory:
     cert = Path(directory) / 'cert.pem'
     key = Path(directory) / 'key.pem'
