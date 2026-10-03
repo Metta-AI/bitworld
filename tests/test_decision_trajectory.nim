@@ -2,11 +2,11 @@ import std/[base64, json, options, os, strutils, tables, unittest]
 import bitworld/decision_trajectory
 
 proc teacher(): DecisionAttempt =
-  DecisionAttempt(attemptId: "d0-a0", policy: "scripted", model: some("scripted"),
-    origin: aoTeacher, prompt: %*[{"role": "user", "content": "private"}],
-    request: %*{"teacher": "scripted"}, response: %"{\"move\":1}",
-    rawResponse: %"{\"move\":1}", parsedAction: %*{"move": 1},
-    decoder: %*{"method": "deterministic"}, accepted: true)
+  result = newDecisionAttempt("d0-a0", "scripted", aoTeacher)
+  result.prompt = %*[{"role": "user", "content": "private"}]
+  result.response = %"{\"move\":1}"
+  result.parsedAction = %*{"move": 1}
+  result.accepted = true
 
 proc episode(): DecisionTrajectory =
   newDecisionTrajectory("episode", "seed-family", "fixture", "v1", "source-sha")
@@ -223,3 +223,47 @@ suite "private authoritative decision trajectories":
     let events = record.eventsJsonl().splitLines()
     check parseJson(events[0])["attempts"][0]["inference_mode"].getStr() == "text_action"
     check parseJson(events[1])["attempts"][0]["inference_mode"].getStr() == "candidate"
+
+  test "partial transport bytes stay private and cannot be treated as complete":
+    var partial = newDecisionAttempt("d0-partial", "native", aoModel)
+    partial.responseBodyB64 = some(encode("partial\x00\xff"))
+    partial.responseHeadersB64 = some(encode("HTTP/1.1 200 OK\r\nX-Trace: a\r\nX-Trace: b\r\n\r\n"))
+    partial.responseComplete = some(false)
+    partial.httpStatus = some(200)
+    partial.rejectionReason = some("interrupted native transfer")
+    let snapshot = readAttemptEvidence(partial.attemptEvidenceJson())
+    check decode(snapshot.responseBodyB64.get()) == "partial\x00\xff"
+    check snapshot.responseHeadersB64 == partial.responseHeadersB64
+    check snapshot.responseComplete == some(false)
+    check snapshot.httpStatus == some(200)
+    let record = episode()
+    record.recordDecision("partial", "0", %*{}, @[snapshot], none(string),
+      %*{"move": 0}, asFallback, fallbackOrigin = some("engine-scripted"))
+    record.finish(esTruncated, %*{}, %*{})
+    let actual = parseJson(record.eventsJsonl().splitLines()[0])["attempts"][0]
+    check actual["response_complete"].getBool() == false
+    check decode(actual["response_body_b64"].getStr()) == "partial\x00\xff"
+    var wire = partial.attemptEvidenceJson()
+    wire["response_complete"] = %"true"
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire = partial.attemptEvidenceJson()
+    wire["http_status"] = %0
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire = partial.attemptEvidenceJson()
+    wire["response_body_b64"] = %"Zg"
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire = partial.attemptEvidenceJson()
+    wire["raw_response"] = %"different received bytes"
+    expect ValueError: discard readAttemptEvidence(wire)
+
+  test "shipped wire envelopes do not invent newly captured transport evidence":
+    var wire = teacher().attemptEvidenceJson()
+    for key in ["response_body_b64", "response_headers_b64", "response_complete", "http_status"]:
+      wire.delete(key)
+    let actual = readAttemptEvidence(wire)
+    check actual.responseBodyB64.isNone
+    check actual.responseHeadersB64.isNone
+    check actual.responseComplete.isNone
+    check actual.httpStatus.isNone
+    wire.delete("response")
+    expect ValueError: discard readAttemptEvidence(wire)
