@@ -267,3 +267,21 @@ suite "private authoritative decision trajectories":
     check actual.httpStatus.isNone
     wire.delete("response")
     expect ValueError: discard readAttemptEvidence(wire)
+
+  test "actual joined-reader evidence survives private wire and engine export":
+    var attempt = teacher()
+    attempt.origin = aoModel
+    attempt.responseReaderJoined = some(true)
+    let wire = attempt.attemptEvidenceJson()
+    check readAttemptEvidence(wire).responseReaderJoined == some(true)
+    let record = episode()
+    record.recordDecision("d0", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted)
+    record.finish(esCompleted, %*{}, %*{})
+    check parseJson(record.eventsJsonl().splitLines()[0])["attempts"][0]["response_reader_joined"].getBool()
+    wire["response_reader_joined"] = %false
+    check readAttemptEvidence(wire).responseReaderJoined == some(false)
+    wire.delete("response_reader_joined")
+    check readAttemptEvidence(wire).responseReaderJoined.isNone
+    wire["response_reader_joined"] = %"joined"
+    expect ValueError: discard readAttemptEvidence(wire)

@@ -21,6 +21,7 @@ type
     httpStatus*: Option[int]
     headerBytes*, bodyBytes*: string
     transferComplete*: bool
+    responseReaderJoined*: Option[bool]
     latencyMs*: Option[float]
     error*: string
   Transfer = object
@@ -140,6 +141,7 @@ proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
     doAssert pthread_sigmask(SIG_SETMASK, oldMask, discardedMask) == 0
   result.headerBytes = move transfer.headerBytes
   result.bodyBytes = move transfer.bodyBytes
+  result.responseReaderJoined = some(true)
 
 proc performNativePost*(url: string, headers: HttpHeaders, body: string,
     deadline: MonoTime): NativeHttpResponse =
