@@ -13,6 +13,10 @@ type
     width, height: int
     label: string
     pixels: seq[uint8]
+    indices: seq[uint8]
+      ## Index plane kept for indexed sprites so a later palette swap
+      ## can reuse it; empty for RGBA sprites.
+    palette: seq[uint8]
 
   GlobalObject = object
     id, x, y, z, layer, spriteId: int
@@ -707,6 +711,60 @@ proc parseMessage*(app: GlobalApp, data: string) =
       offset += labelLength
       sprite.label = label
       app.sprites[id] = sprite
+    of 0x08:
+      require(11)
+      var def = SpritePacketSpriteDef(
+        id: data.readU16(offset),
+        width: data.readU16(offset + 2),
+        height: data.readU16(offset + 4),
+        encoding: data.readU8(offset + 6)
+      )
+      let payloadSize = data.readU32(offset + 7)
+      offset += 11
+      if def.width <= 0 or def.height <= 0:
+        app.closeNetwork()
+        return
+      require(payloadSize)
+      def.compressedPixels = newSeq[uint8](payloadSize)
+      for i in 0 ..< payloadSize:
+        def.compressedPixels[i] = data[offset + i].uint8
+      offset += payloadSize
+      require(2)
+      let labelLength = data.readU16(offset)
+      offset += 2
+      require(labelLength)
+      def.label = newString(labelLength)
+      for i in 0 ..< labelLength:
+        def.label[i] = data[offset + i]
+      offset += labelLength
+      var source: DecodedSprite
+      let sourceId = def.paletteSwapSourceId()
+      if sourceId >= 0 and app.sprites.hasKey(sourceId):
+        source = DecodedSprite(
+          width: app.sprites[sourceId].width,
+          height: app.sprites[sourceId].height,
+          indices: app.sprites[sourceId].indices,
+          palette: app.sprites[sourceId].palette
+        )
+      var decoded: DecodedSprite
+      try:
+        decoded = def.decodeSprite(source)
+      except SpriteProtocolError:
+        app.closeNetwork()
+        return
+      # Renderers need pixels; a pixel-free definition is a protocol
+      # error here, matching the legacy Define Sprite branch.
+      if decoded.pixels.len != def.width * def.height * 4:
+        app.closeNetwork()
+        return
+      app.sprites[def.id] = GlobalSprite(
+        width: def.width,
+        height: def.height,
+        label: def.label,
+        pixels: decoded.pixels,
+        indices: decoded.indices,
+        palette: decoded.palette
+      )
     of 0x02:
       require(11)
       let item = GlobalObject(
