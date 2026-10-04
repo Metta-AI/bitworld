@@ -1,6 +1,6 @@
 ## Owned native WebSocket transport. Callers join workers before close; one caller
 ## owns receive. Sends and libcurl calls are serialized without a hidden reader.
-import std/[atomics, base64, locks, monotimes, os, posix, sequtils, sha1, strutils, sysrand,
+import std/[atomics, base64, locks, monotimes, options, os, posix, sequtils, sha1, strutils, sysrand,
   times, unicode, uri]
 from system/ansi_c import c_malloc, c_free
 import libcurl except Option
@@ -9,9 +9,12 @@ import native_stop
 type
   WebSocketKind* = enum
     wsMessage, wsReady, wsDeadline, wsInterrupted, wsClosed, wsFailure
+  WebSocketMessageKind* = enum
+    wsmText, wsmBinary
   WebSocketResult* = object
     kind*: WebSocketKind
     data*, error*: string
+    messageKind*: Option[WebSocketMessageKind]
   IoPurpose = enum
     ipPlayer, ipCleanup
   PongState = enum
@@ -195,7 +198,7 @@ proc sendFrame(ws: NativeWebSocket, opcode: int, data: string,
     release(ws.sendLock)
 
 proc receiveMessage(ws: NativeWebSocket, deadline: MonoTime,
-    purpose: IoPurpose): WebSocketResult =
+    purpose: IoPurpose, allowBinary: bool): WebSocketResult =
   while true:
     if ws.closed: return WebSocketResult(kind: wsClosed)
     if interrupted(purpose): return WebSocketResult(kind: wsInterrupted)
@@ -282,9 +285,11 @@ proc receiveMessage(ws: NativeWebSocket, deadline: MonoTime,
       let messageOpcode = ws.fragmentOpcode
       ws.fragmentOpcode = 0
       let data = move(ws.fragments)
-      if messageOpcode != 1 or validateUtf8(data) != -1:
+      if (messageOpcode == 2 and not allowBinary) or
+          (messageOpcode == 1 and validateUtf8(data) != -1):
         return WebSocketResult(kind: wsFailure, error: "Expected UTF-8 WebSocket text")
-      return WebSocketResult(kind: wsMessage, data: data)
+      return WebSocketResult(kind: wsMessage, data: data,
+        messageKind: some(if messageOpcode == 1: wsmText else: wsmBinary))
 
 proc connectProgress(context: pointer, a, b, c, d: int64): cint {.cdecl.} =
   let connecting = cast[ptr Connecting](context)
@@ -407,10 +412,21 @@ proc sendNativeText*(ws: NativeWebSocket, data: string,
   ws.sendFrame(1, data, deadline, ipPlayer)
 proc receiveNativeText*(ws: NativeWebSocket,
     deadline: MonoTime): WebSocketResult =
-  ws.receiveMessage(deadline, ipPlayer)
+  ws.receiveMessage(deadline, ipPlayer, false)
 proc sendCleanupText*(ws: NativeWebSocket, data: string,
     cleanupDeadline: MonoTime): WebSocketResult =
   ws.sendFrame(1, data, cleanupDeadline, ipCleanup)
 proc receiveCleanupText*(ws: NativeWebSocket,
     cleanupDeadline: MonoTime): WebSocketResult =
-  ws.receiveMessage(cleanupDeadline, ipCleanup)
+  ws.receiveMessage(cleanupDeadline, ipCleanup, false)
+
+proc sendNativeBinary*(ws: NativeWebSocket, data: string,
+    deadline: MonoTime): WebSocketResult =
+  ws.sendFrame(2, data, deadline, ipPlayer)
+proc receiveNativeMessage*(ws: NativeWebSocket,
+    deadline: MonoTime): WebSocketResult =
+  ## The received opcode determines text versus binary; invalid text still fails.
+  ws.receiveMessage(deadline, ipPlayer, true)
+proc receiveCleanupMessage*(ws: NativeWebSocket,
+    cleanupDeadline: MonoTime): WebSocketResult =
+  ws.receiveMessage(cleanupDeadline, ipCleanup, true)
