@@ -45,6 +45,26 @@ This makes the game world useful as a sandbox for questions like:
 - What incentives cause betrayal?
 - How do agents adapt to repeated social interaction?
 
+## Coworld startup inputs
+
+`readRuntimeConfig`, `readCogameUri`, and `readCogameEnv` require an
+`InputReader`. Native games supply a closure calling
+`runtime_input.readRuntimeInput` with one absolute startup deadline, an owned
+`NativeRequestControl`, body/header byte limits, and private captures. Reserve
+the game's cleanup budget before choosing that deadline.
+
+The reader owns each HTTP(S) handle until it joins. It retains received bytes
+before status, UTF-8, or game configuration validation. Redirects are rejected;
+TLS certificate and hostname verification remain enabled. `SSL_CERT_FILE`
+selects an explicit process trust bundle. File inputs must be regular files
+and obey the same byte limit and deadline.
+
+`runtimeInputCapturesJson` contains private source URIs and raw bytes. Keep it
+in the private checkpoint, never public replay or process logs. Games seal
+failed or interrupted initialization only after input ownership ends, using
+the original bounded cleanup deadline. `pathFromCogameUri` decodes local file
+URIs; it never downloads inputs.
+
 ## Visual Style
 
 Bit World is designed around strict retro display constraints:
