@@ -1,5 +1,5 @@
 import
-  std/[os, parseopt, strutils],
+  std/[os, parseopt, strutils, unicode],
   curly
 
 const
@@ -14,6 +14,8 @@ const
   CogamePortEnv* = "COGAME_PORT"
 
 type
+  InputReader* = proc(value, source: string): string {.closure.}
+
   CogameRuntimeError* = object of CatchableError
 
   RuntimeConfig* = object
@@ -94,51 +96,22 @@ proc isHttpCogameUri*(value: string): bool =
   ## Returns true when a Coworld URI is an HTTP(S) URI.
   value.startsWith("http://") or value.startsWith("https://")
 
-proc readCogameUri*(value, source: string): string =
-  ## Reads data from a Coworld file URI or HTTP(S) signed URI.
-  if value.len == 0:
-    return ""
+proc readCogameUri*(value, source: string, inputReader: InputReader): string =
+  ## The caller owns input deadlines, cancellation, limits, and private capture.
+  if value.len == 0: return ""
+  inputReader(value, source)
 
-  let path = filePathFromCogameUri(value, source)
-  if path.len > 0:
-    return readFile(path)
-
-  if value.isHttpCogameUri():
-    let client = newCurlPool(1)
-    defer: client.close()
-    let response = client.get(value)
-    if response.code < 200 or response.code >= 300:
-      raise newException(
-        IOError,
-        source & " download failed: " & $response.code
-      )
-    return response.body
-
-  if "://" in value:
-    raise newException(
-      CogameRuntimeError,
-      "unsupported URI from " & source & ": " & value
-    )
-
-  raise newException(CogameRuntimeError, source & " must be a URI")
-
-proc readCogameEnv*(name: string): string =
-  ## Reads data from a Coworld URI environment variable.
-  readCogameUri(getEnv(name), name)
+proc readCogameEnv*(name: string, inputReader: InputReader): string =
+  readCogameUri(getEnv(name), name, inputReader)
 
 proc pathFromCogameUri*(value, source: string): string =
-  ## Converts a Coworld file/input URI into a local path.
+  ## Converts a Coworld local file URI into a path without performing transport.
   if value.len == 0:
     return ""
 
   let path = filePathFromCogameUri(value, source)
   if path.len > 0:
     return path
-
-  if value.isHttpCogameUri():
-    result = getTempDir() / ("cogame-" & source.toLowerAscii())
-    writeFile(result, readCogameUri(value, source))
-    return
 
   if "://" in value:
     raise newException(
@@ -276,7 +249,7 @@ proc writeRuntimeTarget(
     return
   value.writeLocalTarget(data)
 
-proc readRuntimeConfig*(): RuntimeConfig =
+proc readRuntimeConfig*(inputReader: InputReader): RuntimeConfig =
   ## Reads the Coworld runtime config from CLI arguments and env vars.
   result = RuntimeConfig(host: RuntimeDefaultHost, port: RuntimeDefaultPort)
   var
@@ -308,11 +281,11 @@ proc readRuntimeConfig*(): RuntimeConfig =
         configSet = true
       of "config-path":
         key.requireValue(val)
-        result.config = readFile(val)
+        result.config = inputReader("file://" & absolutePath(val), "--" & key)
         configSet = true
       of "config-uri":
         key.requireValue(val)
-        result.config = readCogameUri(val, "--" & key)
+        result.config = readCogameUri(val, "--" & key, inputReader)
         configSet = true
       of "results":
         key.requireValue(val)
@@ -332,12 +305,12 @@ proc readRuntimeConfig*(): RuntimeConfig =
         saveReplaySet = true
       of "load-replay":
         key.requireValue(val)
-        result.replay = readFile(val)
+        result.replay = inputReader("file://" & absolutePath(val), "--" & key)
         result.replayMode = true
         loadReplaySet = true
       of "load-replay-uri":
         key.requireValue(val)
-        result.replay = readCogameUri(val, "--" & key)
+        result.replay = readCogameUri(val, "--" & key, inputReader)
         result.replayMode = true
         loadReplaySet = true
       of "log":
@@ -383,7 +356,7 @@ proc readRuntimeConfig*(): RuntimeConfig =
   if not configSet:
     let configUri = getEnv(CogameConfigUriEnv)
     if configUri.len > 0:
-      result.config = readCogameUri(configUri, CogameConfigUriEnv)
+      result.config = readCogameUri(configUri, CogameConfigUriEnv, inputReader)
   if not resultsSet:
     result.resultsUri = getEnv(CogameResultsUriEnv)
   if not saveReplaySet:
@@ -391,10 +364,12 @@ proc readRuntimeConfig*(): RuntimeConfig =
   if not loadReplaySet:
     let replayUri = getEnv(CogameLoadReplayUriEnv)
     if replayUri.len > 0:
-      result.replay = readCogameUri(replayUri, CogameLoadReplayUriEnv)
+      result.replay = readCogameUri(replayUri, CogameLoadReplayUriEnv, inputReader)
       result.replayMode = true
   if not logSet:
     result.logUri = getEnv(CogameLogUriEnv)
+  if result.config.validateUtf8() != -1:
+    raise newException(CogameRuntimeError, "runtime config must be UTF-8")
 
 proc writeResults*(config: RuntimeConfig, data: string) =
   ## Writes a Coworld results artifact if a target is configured.

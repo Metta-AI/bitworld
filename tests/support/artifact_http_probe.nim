@@ -1,5 +1,5 @@
 import std/[base64, json, monotimes, options, os, strutils, times]
-import bitworld/[artifact_runtime, decision_trajectory, native_http, native_stop, runtime]
+import bitworld/[artifact_runtime, decision_trajectory, native_http, native_stop, runtime, runtime_input]
 
 var control: NativeRequestControl
 let args = commandLineParams()
@@ -15,7 +15,9 @@ if args[1] == "retained":
   for entry in walkDir("/proc/self/task"): inc initialThreads
   for index in 0 ..< 8:
     writeCogameUri(args[0], "retained", "application/json", "fixture")
-    doAssert readCogameUri(args[0], "fixture") == "reloaded"
+    var captures: seq[RuntimeInputCapture]
+    doAssert readRuntimeInput(args[0], "fixture", deadline, control,
+      1024, 4096, captures) == "reloaded"
   var finalThreads = 0
   for entry in walkDir("/proc/self/task"): inc finalThreads
   doAssert finalThreads == initialThreads
