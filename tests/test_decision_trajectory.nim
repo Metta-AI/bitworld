@@ -169,7 +169,7 @@ suite "private authoritative decision trajectories":
 
   test "macro orders keep authoritative physical ticks separately from parsed action":
     let record = episode()
-    let physical = ExecutionEvidence(startTick: 12, endTick: 14, tickHz: 24,
+    let physical = ExecutionEvidence(controlEncoding: ceI8I8I8U8, startTick: 12, endTick: 14, tickHz: 24,
       seatControlsBase64: encode("\xff\x00\x7f\x03\x01\x02\x80\x00"))
     record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
       %*{"move": 1}, asAccepted, execution = some(physical))
@@ -285,3 +285,23 @@ suite "private authoritative decision trajectories":
     check readAttemptEvidence(wire).responseReaderJoined.isNone
     wire["response_reader_joined"] = %"joined"
     expect ValueError: discard readAttemptEvidence(wire)
+
+  test "u8 execution retains one actual control byte per tick":
+    let record = episode()
+    let attempt = teacher()
+    let controls = "\x00\x7f\xfe"
+    let physical = ExecutionEvidence(controlEncoding: ceU8,
+      startTick: 5, endTick: 8, tickHz: 24, seatControlsBase64: encode(controls))
+    record.recordDecision("u8", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted, execution = some(physical))
+    record.finish(esCompleted, %*{}, %*{})
+    let event = parseJson(record.eventsJsonl().splitLines()[0])
+    check event["execution"]["control_encoding"].getStr() == "u8"
+    check decode(event["execution"]["seat_controls_b64"].getStr()) == controls
+    for invalid in [encode(controls & controls & controls & controls), "AH/+==="]:
+      var padded = physical
+      padded.seatControlsBase64 = invalid
+      expect ValueError:
+        episode().recordDecision("invalid", "0", %*{}, @[attempt],
+          some(attempt.attemptId), attempt.parsedAction, asAccepted,
+          execution = some(padded))
