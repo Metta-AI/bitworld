@@ -2,7 +2,7 @@
 ## No provider parsing or game acceptance occurs here. All received bytes survive
 ## timeout/interruption; the handle is cleaned before the result can be sealed.
 
-import std/[monotimes, options, os, posix, times]
+import std/[atomics, monotimes, options, os, posix, times]
 import libcurl except Option
 import webby/httpheaders
 import native_stop
@@ -15,7 +15,9 @@ type
   RequestPurpose = enum
     rpInference, rpArtifact
   NativeHttpKind* = enum
-    nhComplete, nhDeadline, nhInterrupted, nhTransportFailure
+    nhComplete, nhDeadline, nhInterrupted, nhCanceled, nhTransportFailure
+  NativeRequestControl* = object
+    canceled: Atomic[bool]
   NativeHttpResponse* = object
     kind*: NativeHttpKind
     httpStatus*: Option[int]
@@ -27,6 +29,7 @@ type
   Transfer = object
     deadline: MonoTime
     purpose: RequestPurpose
+    control: ptr NativeRequestControl
     headerBytes, bodyBytes: string
 
 # The pinned Nim binding omits these existing libcurl options.
@@ -35,6 +38,13 @@ const
   OptConnectTimeoutMs = cast[libcurl.Option](156)
   OptProtocols = cast[libcurl.Option](181)
   OptXferInfoFunction = cast[libcurl.Option](20219)
+
+proc cancelNativeRequest*(control: var NativeRequestControl) {.inline, gcsafe, raises: [].} =
+  ## Irreversible for this request only; the owner retains it until its worker joins.
+  control.canceled.store(true, moRelaxed)
+
+proc nativeRequestCanceled*(control: var NativeRequestControl): bool {.inline, gcsafe, raises: [].} =
+  control.canceled.load(moRelaxed)
 
 proc requireCurl(code: Code) =
   if code != E_OK:
@@ -62,14 +72,18 @@ proc receiveBody(buffer: cstring, size, count: int, context: pointer): int {.cde
 proc checkTransfer(context: pointer, downloadTotal, downloaded,
     uploadTotal, uploaded: int64): cint {.cdecl.} =
   let transfer = cast[ptr Transfer](context)
-  if (transfer.purpose == rpInference and interruptionRequested()) or
+  if (transfer.purpose == rpInference and
+      (interruptionRequested() or transfer.control[].nativeRequestCanceled())) or
       getMonoTime() >= transfer.deadline: 1 else: 0
 
 proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
     headers: HttpHeaders, body: string, deadline: MonoTime,
-    purpose: RequestPurpose): NativeHttpResponse =
+    purpose: RequestPurpose, control: var NativeRequestControl): NativeHttpResponse =
   if purpose == rpInference and interruptionRequested():
     result.kind = nhInterrupted
+    return
+  if purpose == rpInference and control.nativeRequestCanceled():
+    result.kind = nhCanceled
     return
   let remaining = (deadline - getMonoTime()).inNanoseconds
   if remaining <= 0:
@@ -79,7 +93,7 @@ proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
   let handle = easy_init()
   doAssert handle != nil, "Cannot allocate native HTTP handle"
   var headerList: Pslist
-  var transfer = Transfer(deadline: deadline, purpose: purpose)
+  var transfer = Transfer(deadline: deadline, purpose: purpose, control: control.addr)
   var oldMask, pipeMask, previousPending: Sigset
   doAssert sigemptyset(pipeMask) == 0
   doAssert sigaddset(pipeMask, SIGPIPE) == 0
@@ -111,8 +125,11 @@ proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
     requireCurl(handle.easy_setopt(OptXferInfoFunction, checkTransfer))
     let started = getMonoTime()
     let finalRemaining = (deadline - started).inNanoseconds
-    if finalRemaining <= 0 or (purpose == rpInference and interruptionRequested()):
-      result.kind = if purpose == rpInference and interruptionRequested(): nhInterrupted else: nhDeadline
+    if finalRemaining <= 0 or (purpose == rpInference and
+        (interruptionRequested() or control.nativeRequestCanceled())):
+      result.kind = if purpose == rpInference and interruptionRequested(): nhInterrupted
+        elif purpose == rpInference and control.nativeRequestCanceled(): nhCanceled
+        else: nhDeadline
       return
     let milliseconds = clong((finalRemaining + 999_999) div 1_000_000)
     requireCurl(handle.easy_setopt(OptTimeoutMs, milliseconds))
@@ -124,6 +141,7 @@ proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
     requireCurl(handle.easy_getinfo(INFO_RESPONSE_CODE, status.addr))
     if status != 0: result.httpStatus = some(int(status))
     if purpose == rpInference and interruptionRequested(): result.kind = nhInterrupted
+    elif purpose == rpInference and control.nativeRequestCanceled(): result.kind = nhCanceled
     elif code == E_OPERATION_TIMEOUTED or getMonoTime() >= deadline: result.kind = nhDeadline
     elif code == E_OK: result.kind = nhComplete
     else: result.kind = nhTransportFailure
@@ -139,17 +157,21 @@ proc performOwnedRequest(url: string, httpMethod: ArtifactHttpMethod,
         doAssert sigwait(pipeMask, received) == 0
     var discardedMask: Sigset
     doAssert pthread_sigmask(SIG_SETMASK, oldMask, discardedMask) == 0
+  if purpose == rpInference and interruptionRequested(): result.kind = nhInterrupted
+  elif purpose == rpInference and control.nativeRequestCanceled(): result.kind = nhCanceled
+  elif getMonoTime() >= deadline: result.kind = nhDeadline
   result.headerBytes = move transfer.headerBytes
   result.bodyBytes = move transfer.bodyBytes
   result.responseReaderJoined = some(true)
 
 proc performNativePost*(url: string, headers: HttpHeaders, body: string,
-    deadline: MonoTime): NativeHttpResponse =
+    deadline: MonoTime, control: var NativeRequestControl): NativeHttpResponse =
   ## A caller shares one deadline across retries. Never reset it per attempt.
-  performOwnedRequest(url, ahPost, headers, body, deadline, rpInference)
+  performOwnedRequest(url, ahPost, headers, body, deadline, rpInference, control)
 
 proc performArtifactUpload*(url: string, httpMethod: ArtifactHttpMethod,
     headers: HttpHeaders, body: string, cleanupDeadline: MonoTime): NativeHttpResponse =
   ## Checkpoint finalization has its own finite cleanup lifetime after inference stops.
   ## No caller can disable interruption in the inference API.
-  performOwnedRequest(url, httpMethod, headers, body, cleanupDeadline, rpArtifact)
+  var control: NativeRequestControl
+  performOwnedRequest(url, httpMethod, headers, body, cleanupDeadline, rpArtifact, control)
