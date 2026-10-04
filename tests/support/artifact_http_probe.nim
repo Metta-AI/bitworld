@@ -1,11 +1,12 @@
 import std/[base64, json, monotimes, options, os, strutils, times]
 import bitworld/[artifact_runtime, decision_trajectory, native_http, native_stop, runtime]
 
+var control: NativeRequestControl
 let args = commandLineParams()
 installNativeStopHandlers()
 let deadline = getMonoTime() + initDuration(milliseconds = args[2].parseBiggestInt())
 if args[1] == "stop":
-  let inference = performNativePost(args[0] & "/inference", @[], "started", deadline)
+  let inference = performNativePost(args[0] & "/inference", @[], "started", deadline, control)
   doAssert inference.kind == nhInterrupted
   echo $(%*{"inference": $inference.kind})
   flushFile(stdout)

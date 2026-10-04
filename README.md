@@ -205,9 +205,13 @@ coworld certify among_them/coworld_manifest.json
 
 ## Native Coworld HTTP lifecycle
 
-`bitworld/native_http.performNativePost(url, headers, body, deadline)` owns one
+`bitworld/native_http.performNativePost(url, headers, body, deadline, control)` owns one
 libcurl handle until cleanup. Pass the same absolute `MonoTime` deadline across
-attempts. It returns exact received header/body bytes, observed status, actual
+attempts. Each request has an owned `NativeRequestControl`; retain it until every
+worker using it joins. `cancelNativeRequest(control)` stops only that request and
+returns `nhCanceled`. A later decision uses a fresh control without resetting
+the original decision deadline. Global stop remains irreversible.
+It returns exact received header/body bytes, observed status, actual
 transfer completeness, and a typed completion/deadline/interruption/failure kind.
 A complete transfer arriving after the deadline remains ineligible for selection.
 
