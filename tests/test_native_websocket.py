@@ -212,4 +212,31 @@ with tempfile.TemporaryDirectory(prefix='native-websocket-tls-', dir=Path(PROBE)
     rows = run_case('TLS-wrong-host', 'normal', lambda connection: None,
                     tls=context, trust=str(cert), rejected_tls=True)
     assert rows[0]['connect'] == 'wsFailure'
+def mixed_binary(connection):
+    connection.sendall(frame(b'{"kind":"native_welcome","slot":3}') +
+                       frame(b'\x00\xff\xe2\x82', opcode=2) +
+                       frame(b'{"kind":"native_terminal","tick":2}'))
+    assert client_frame(connection) == (2, b'\xff\x00\x85')
+    assert client_frame(connection) == (1, b'terminal_ack')
+rows = run_case('mixed-native-welcome-binary-terminal', 'mixed-binary', mixed_binary)
+assert [row['message_kind'] for row in rows[1:]] == ['wsmText', 'wsmBinary', 'wsmText']
+assert base64.b64decode(rows[2]['body_b64'], validate=True) == b'\x00\xff\xe2\x82'
+rows = run_case('text-interface-rejects-binary', 'normal',
+                lambda connection: connection.sendall(frame(b'\xff', opcode=2)))
+assert rows[1]['kind'] == 'wsFailure'
+def partial_binary(connection):
+    data = frame(b'\x00\xff\xe2\x82', opcode=2)
+    connection.sendall(data[:3])
+    time.sleep(.2)
+    connection.sendall(data[3:])
+rows = run_case('partial-binary-resumes-after-deadline', 'binary-resume', partial_binary)
+assert rows[1]['kind'] == 'wsDeadline'
+assert base64.b64decode(rows[2]['body_b64'], validate=True) == b'\x00\xff\xe2\x82'
+def stopped_binary(connection):
+    partial_binary(connection)
+    assert client_frame(connection) == (1, b'terminal_ack')
+for native_signal in [signal.SIGTERM, signal.SIGINT]:
+    rows = run_case('partial-binary-signal-cleanup', 'binary-signal', stopped_binary, signals=native_signal)
+    assert rows[1]['kind'] == 'wsInterrupted'
+    assert base64.b64decode(rows[2]['body_b64'], validate=True) == b'\x00\xff\xe2\x82'
 print('native websocket transport gates passed')

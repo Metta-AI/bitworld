@@ -1,5 +1,5 @@
-import std/[json, monotimes, os, strutils, times]
-import libcurl
+import std/[base64, json, monotimes, options, os, strutils, times]
+import libcurl except Option
 import bitworld/[native_stop, native_websocket]
 type Sender = tuple[socket: ptr NativeWebSocket, status: ptr WebSocketKind, count, bytes, deadlineMs: int]
 proc sendMany(argument: Sender) {.thread.} =
@@ -21,7 +21,28 @@ proc main() =
   proc report(value: WebSocketResult) =
     echo $(%*{"kind": $value.kind, "data": value.data,
       "elapsed_ms": (getMonoTime() - started).inMilliseconds})
-  if mode == "resume":
+  if mode == "mixed-binary":
+    let deadline = getMonoTime() + initDuration(milliseconds = 600)
+    for index in 0 ..< 3:
+      let received = socket.receiveNativeMessage(deadline)
+      doAssert received.kind == wsMessage
+      echo $(%*{"kind": $received.kind, "message_kind": $received.messageKind.get(),
+        "body_b64": encode(received.data)})
+    doAssert socket.sendNativeBinary("\xff\x00\x85", deadline).kind == wsReady
+    doAssert socket.sendCleanupText("terminal_ack", deadline).kind == wsReady
+  elif mode == "binary-resume" or mode == "binary-signal":
+    let firstDeadline = getMonoTime() + initDuration(milliseconds = (if mode == "binary-signal": 5000 else: 80))
+    report(socket.receiveNativeMessage(firstDeadline))
+    let deadline = getMonoTime() + initDuration(milliseconds = 600)
+    let received = if mode == "binary-signal": socket.receiveCleanupMessage(deadline)
+      else: socket.receiveNativeMessage(deadline)
+    doAssert received.kind == wsMessage and received.messageKind == some(wsmBinary)
+    echo $(%*{"kind": $received.kind, "message_kind": $received.messageKind.get(),
+      "body_b64": encode(received.data)})
+    if mode == "binary-signal":
+      doAssert socket.receiveNativeMessage(deadline).kind == wsInterrupted
+      doAssert socket.sendCleanupText("terminal_ack", deadline).kind == wsReady
+  elif mode == "resume":
     report(socket.receiveNativeText(getMonoTime() + initDuration(milliseconds = 80)))
     report(socket.receiveNativeText(getMonoTime() + initDuration(milliseconds = 600)))
   elif mode == "signal":
