@@ -34,7 +34,10 @@ type
     inputTokens*, outputTokens*: Option[int]
     promptTokenIds*, sampledTokenIds*: Option[seq[int]]
     behaviorLogprobs*: Option[seq[float]]
+  ControlEncoding* = enum
+    ceI8I8I8U8 = "i8-i8-i8-u8", ceU8 = "u8"
   ExecutionEvidence* = object
+    controlEncoding*: ControlEncoding
     startTick*, endTick*, tickHz*: int
     seatControlsBase64*: string
   DecisionTrajectory* = ref object
@@ -278,12 +281,18 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
   var encodedExecution = newJNull()
   if execution.isSome:
     let physical = execution.get()
+    let controls = decode(physical.seatControlsBase64)
+    let stride = case physical.controlEncoding
+      of ceI8I8I8U8: 4
+      of ceU8: 1
     if physical.startTick < 0 or physical.endTick <= physical.startTick or
         physical.tickHz <= 0 or
-        decode(physical.seatControlsBase64).len != (physical.endTick - physical.startTick) * 4:
-      raise newException(ValueError, "execution needs four control bytes per tick and a positive tick rate")
+        controls.len != (physical.endTick - physical.startTick) * stride or
+        encode(controls) != physical.seatControlsBase64:
+      raise newException(ValueError,
+        "execution requires canonical base64, exact encoding stride and positive tick rate")
     encodedExecution = %*{"start_tick": physical.startTick, "end_tick": physical.endTick,
-      "tick_hz": physical.tickHz, "control_encoding": "i8-i8-i8-u8",
+      "tick_hz": physical.tickHz, "control_encoding": $physical.controlEncoding,
       "seat_controls_b64": physical.seatControlsBase64}
   trajectory.decisions.add(copy(%*{
     "schema_version": "1", "event_type": "decision",
