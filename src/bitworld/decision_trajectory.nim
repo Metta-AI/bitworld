@@ -22,6 +22,7 @@ type
     model*: Option[string]
     origin*: AttemptOrigin
     inferenceMode*: InferenceMode
+    actionEvidence*: Option[JsonNode] ## Game-owned scoring provenance; never player-supplied.
     prompt*, request*, response*, rawResponse*, parsedAction*, decoder*: JsonNode
     accepted*: bool
     platformCallId*, rejectionReason*, modelIdentity*, tokenizerIdentity*: Option[string]
@@ -247,9 +248,19 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
       selectedPrompt = attempt.prompt
       if not attempt.accepted or attempt.parsedAction != executedAction:
         raise newException(ValueError, "selected proposal differs from executed action")
+    if attempt.actionEvidence.isSome:
+      let action = attempt.actionEvidence.get()
+      if action.kind != JObject or action["protocol"].kind != JString or
+          action["protocol"].getStr().len == 0:
+        raise newException(ValueError, "game action evidence requires a protocol-tagged object")
+      if attempt.inferenceMode != imCandidate or attempt.response.kind != JNull or
+          attempt.sampledTokenIds.isSome or attempt.behaviorLogprobs.isSome:
+        raise newException(ValueError, "scoring evidence cannot claim generated text or sampled tokens")
     encoded.add(%*{
       "attempt_id": attempt.attemptId, "policy": attempt.policy,
       "inference_mode": $attempt.inferenceMode,
+      "action_evidence": (if attempt.actionEvidence.isSome:
+        copy(attempt.actionEvidence.get()) else: newJNull()),
       "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
       "prompt": attempt.prompt, "request": attempt.request,
       "response": attempt.response, "raw_response": attempt.rawResponse,
