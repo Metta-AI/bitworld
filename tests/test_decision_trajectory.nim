@@ -1,17 +1,44 @@
-import std/[base64, json, options, os, strutils, unittest]
+import std/[base64, json, options, os, strutils, tables, unittest]
 import bitworld/decision_trajectory
 
 proc teacher(): DecisionAttempt =
-  DecisionAttempt(attemptId: "d0-a0", policy: "scripted", model: some("scripted"),
-    origin: aoTeacher, prompt: %*[{"role": "user", "content": "private"}],
-    request: %*{"teacher": "scripted"}, response: %"{\"move\":1}",
-    rawResponse: %"{\"move\":1}", parsedAction: %*{"move": 1},
-    decoder: %*{"method": "deterministic"}, accepted: true)
+  result = newDecisionAttempt("d0-a0", "scripted", aoTeacher)
+  result.prompt = %*[{"role": "user", "content": "private"}]
+  result.response = %"{\"move\":1}"
+  result.parsedAction = %*{"move": 1}
+  result.accepted = true
 
 proc episode(): DecisionTrajectory =
   newDecisionTrajectory("episode", "seed-family", "fixture", "v1", "source-sha")
 
 suite "private authoritative decision trajectories":
+  test "registered game identity is frozen before the first action":
+    putEnv("COWORLD_GAME_NAME", "registered-alias")
+    defer: delEnv("COWORLD_GAME_NAME")
+    let record = episode()
+    putEnv("COWORLD_GAME_NAME", "")
+    expect ValueError: discard episode()
+    record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+      %*{"move": 1}, asAccepted, terminal = true)
+    record.finish(esCompleted, %*{}, %*{})
+    let lines = record.eventsJsonl().splitLines()
+    check parseJson(lines[0])["game"].getStr() == "registered-alias"
+    check parseJson(lines[1])["game"].getStr() == "registered-alias"
+
+  test "runtime engine image is validated and frozen before the first action":
+    let digest = "sha256:" & repeat('a', 64)
+    putEnv("COWORLD_GAME_IMAGE_DIGEST", digest)
+    defer: delEnv("COWORLD_GAME_IMAGE_DIGEST")
+    let record = episode()
+    putEnv("COWORLD_GAME_IMAGE_DIGEST", "mutable-image:latest")
+    expect ValueError: discard episode()
+    record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
+      %*{"move": 1}, asAccepted, terminal = true)
+    record.finish(esCompleted, %*{}, %*{})
+    let lines = record.eventsJsonl().splitLines()
+    check parseJson(lines[0])["image_digest"].getStr() == digest
+    check parseJson(lines[1])["image_digest"].getStr() == digest
+
   test "complete engine action and teacher evidence round-trip privately":
     let record = episode()
     let observation = %*{"private_card": "secret"}
@@ -70,6 +97,9 @@ suite "private authoritative decision trajectories":
     var attempt = teacher()
     attempt.origin = aoModel
     attempt.platformCallId = some("00000000-0000-4000-8000-000000000001")
+    attempt.responseHeaders = some({"request-id": "actual-provider-id",
+      "X-Softmax-Llm-Call-Id": attempt.platformCallId.get()}.toTable())
+    attempt.providerRequestId = some("actual-provider-id")
     attempt.modelIdentity = some("checkpoint-sha")
     attempt.tokenizerIdentity = some("tokenizer-sha")
     attempt.chatTemplateSha256 = some("template-sha")
@@ -82,6 +112,10 @@ suite "private authoritative decision trajectories":
     check decoded.attemptEvidenceJson() == wire
     check not decoded.accepted
     check decoded.parsedAction.kind == JNull
+    check decoded.providerRequestId.get() == "actual-provider-id"
+    check decoded.responseHeaders.get()["request-id"] == "actual-provider-id"
+    attempt.responseHeaders.get()["request-id"] = "later mutation"
+    check decoded.responseHeaders.get()["request-id"] == "actual-provider-id"
     wire["behavior_logprobs"] = newJNull()
     let greedy = readAttemptEvidence(wire)
     check greedy.sampledTokenIds.get() == @[3, 4]
@@ -97,6 +131,22 @@ suite "private authoritative decision trajectories":
     expect ValueError: discard readAttemptEvidence(wire)
     wire["platform_call_id"] = newJNull()
     wire["model"] = %42
+    expect ValueError: discard readAttemptEvidence(wire)
+
+  test "actual response headers survive authoritative episode export":
+    let record = episode()
+    var attempt = teacher()
+    attempt.responseHeaders = some({"request-id": "provider-real",
+      "X-Trace-Header": "private value"}.toTable())
+    attempt.providerRequestId = some("provider-real")
+    record.recordDecision("d0", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted, terminal = true)
+    record.finish(esCompleted, %*{}, %*{})
+    let encoded = parseJson(record.eventsJsonl().splitLines()[0])["attempts"][0]
+    check encoded["response_headers"]["X-Trace-Header"].getStr() == "private value"
+    check encoded["provider_request_id"].getStr() == "provider-real"
+    let wire = attempt.attemptEvidenceJson()
+    wire["response_headers"] = %*{"request-id": 42}
     expect ValueError: discard readAttemptEvidence(wire)
 
   test "unanswered model and unknown external attempts have explicit JSON nulls":
@@ -119,7 +169,7 @@ suite "private authoritative decision trajectories":
 
   test "macro orders keep authoritative physical ticks separately from parsed action":
     let record = episode()
-    let physical = ExecutionEvidence(startTick: 12, endTick: 14, tickHz: 24,
+    let physical = ExecutionEvidence(controlEncoding: ceI8I8I8U8, startTick: 12, endTick: 14, tickHz: 24,
       seatControlsBase64: encode("\xff\x00\x7f\x03\x01\x02\x80\x00"))
     record.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
       %*{"move": 1}, asAccepted, execution = some(physical))
@@ -134,6 +184,128 @@ suite "private authoritative decision trajectories":
       invalid.recordDecision("d0", "0", %*{}, @[teacher()], some("d0-a0"),
         %*{"move": 1}, asAccepted, execution = some(ExecutionEvidence(
           startTick: 12, endTick: 14, tickHz: 24, seatControlsBase64: encode("four"))))
+
+  test "private corpus artifacts refuse existing files and symlinks":
+    let parent = getTempDir() / ("bitworld-private-corpus-" & $getCurrentProcessId())
+    let destination = parent / "manifest.json"
+    writePrivate(destination, "original private corpus")
+    defer:
+      removeFile(destination)
+      removeDir(parent)
+    check getFilePermissions(parent) == {fpUserRead, fpUserWrite, fpUserExec}
+    check getFilePermissions(destination) == {fpUserRead, fpUserWrite}
+    expect ValueError: writePrivate(destination, "replacement")
+    check readFile(destination) == "original private corpus"
+    when defined(posix):
+      let alias = parent / "alias.json"
+      createSymlink(destination, alias)
+      defer: removeFile(alias)
+      expect ValueError: writePrivate(alias, "replacement through symlink")
+      check readFile(destination) == "original private corpus"
+
+  test "private inference mode is game-owned and absent from the player wire":
+    var attempt = teacher()
+    check attempt.inferenceMode == imTextAction
+    let wire = attempt.attemptEvidenceJson()
+    check not wire.hasKey("inference_mode")
+    wire["inference_mode"] = %"candidate"
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire.delete("inference_mode")
+    check readAttemptEvidence(wire).inferenceMode == imTextAction
+    let record = episode()
+    record.recordDecision("d0", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted)
+    attempt.inferenceMode = imCandidate
+    attempt.attemptId = "d1-a0"
+    record.recordDecision("d1", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted)
+    record.finish(esCompleted, %*{"winner": 0}, %*{"0": 1})
+    let events = record.eventsJsonl().splitLines()
+    check parseJson(events[0])["attempts"][0]["inference_mode"].getStr() == "text_action"
+    check parseJson(events[1])["attempts"][0]["inference_mode"].getStr() == "candidate"
+
+  test "partial transport bytes stay private and cannot be treated as complete":
+    var partial = newDecisionAttempt("d0-partial", "native", aoModel)
+    partial.responseBodyB64 = some(encode("partial\x00\xff"))
+    partial.responseHeadersB64 = some(encode("HTTP/1.1 200 OK\r\nX-Trace: a\r\nX-Trace: b\r\n\r\n"))
+    partial.responseComplete = some(false)
+    partial.httpStatus = some(200)
+    partial.rejectionReason = some("interrupted native transfer")
+    let snapshot = readAttemptEvidence(partial.attemptEvidenceJson())
+    check decode(snapshot.responseBodyB64.get()) == "partial\x00\xff"
+    check snapshot.responseHeadersB64 == partial.responseHeadersB64
+    check snapshot.responseComplete == some(false)
+    check snapshot.httpStatus == some(200)
+    let record = episode()
+    record.recordDecision("partial", "0", %*{}, @[snapshot], none(string),
+      %*{"move": 0}, asFallback, fallbackOrigin = some("engine-scripted"))
+    record.finish(esTruncated, %*{}, %*{})
+    let actual = parseJson(record.eventsJsonl().splitLines()[0])["attempts"][0]
+    check actual["response_complete"].getBool() == false
+    check decode(actual["response_body_b64"].getStr()) == "partial\x00\xff"
+    var wire = partial.attemptEvidenceJson()
+    wire["response_complete"] = %"true"
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire = partial.attemptEvidenceJson()
+    wire["http_status"] = %0
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire = partial.attemptEvidenceJson()
+    wire["response_body_b64"] = %"Zg"
+    expect ValueError: discard readAttemptEvidence(wire)
+    wire = partial.attemptEvidenceJson()
+    wire["raw_response"] = %"different received bytes"
+    expect ValueError: discard readAttemptEvidence(wire)
+
+  test "shipped wire envelopes do not invent newly captured transport evidence":
+    var wire = teacher().attemptEvidenceJson()
+    for key in ["response_body_b64", "response_headers_b64", "response_complete", "http_status"]:
+      wire.delete(key)
+    let actual = readAttemptEvidence(wire)
+    check actual.responseBodyB64.isNone
+    check actual.responseHeadersB64.isNone
+    check actual.responseComplete.isNone
+    check actual.httpStatus.isNone
+    wire.delete("response")
+    expect ValueError: discard readAttemptEvidence(wire)
+
+  test "actual joined-reader evidence survives private wire and engine export":
+    var attempt = teacher()
+    attempt.origin = aoModel
+    attempt.responseReaderJoined = some(true)
+    let wire = attempt.attemptEvidenceJson()
+    check readAttemptEvidence(wire).responseReaderJoined == some(true)
+    let record = episode()
+    record.recordDecision("d0", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted)
+    record.finish(esCompleted, %*{}, %*{})
+    check parseJson(record.eventsJsonl().splitLines()[0])["attempts"][0]["response_reader_joined"].getBool()
+    wire["response_reader_joined"] = %false
+    check readAttemptEvidence(wire).responseReaderJoined == some(false)
+    wire.delete("response_reader_joined")
+    check readAttemptEvidence(wire).responseReaderJoined.isNone
+    wire["response_reader_joined"] = %"joined"
+    expect ValueError: discard readAttemptEvidence(wire)
+
+  test "u8 execution retains one actual control byte per tick":
+    let record = episode()
+    let attempt = teacher()
+    let controls = "\x00\x7f\xfe"
+    let physical = ExecutionEvidence(controlEncoding: ceU8,
+      startTick: 5, endTick: 8, tickHz: 24, seatControlsBase64: encode(controls))
+    record.recordDecision("u8", "0", %*{}, @[attempt], some(attempt.attemptId),
+      attempt.parsedAction, asAccepted, execution = some(physical))
+    record.finish(esCompleted, %*{}, %*{})
+    let event = parseJson(record.eventsJsonl().splitLines()[0])
+    check event["execution"]["control_encoding"].getStr() == "u8"
+    check decode(event["execution"]["seat_controls_b64"].getStr()) == controls
+    for invalid in [encode(controls & controls & controls & controls), "AH/+==="]:
+      var padded = physical
+      padded.seatControlsBase64 = invalid
+      expect ValueError:
+        episode().recordDecision("invalid", "0", %*{}, @[attempt],
+          some(attempt.attemptId), attempt.parsedAction, asAccepted,
+          execution = some(padded))
+
 
 suite "served inference and engine binding":
   test "request decoder agrees with served limits and preserves private response":
@@ -171,3 +343,4 @@ suite "served inference and engine binding":
     check decision["selected_attempt_id"].kind == JNull
     check not decision["attempts"][0]["accepted"].getBool()
     check decision["action_status"].getStr() == "fallback"
+

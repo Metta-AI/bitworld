@@ -1,7 +1,7 @@
 ## Private decision evidence supplied by the authoritative game engine.
 ## These records are training artifacts, never spectator replay frames.
 
-import std/[base64, json, options, os, strutils]
+import std/[base64, json, options, os, strutils, tables]
 import runtime
 when defined(posix):
   import std/posix
@@ -11,6 +11,8 @@ const CogameSaveTrajectoryUriEnv* = "COGAME_SAVE_TRAJECTORY_URI"
 type
   AttemptOrigin* = enum
     aoModel, aoTeacher, aoFallback, aoHuman, aoUnknown
+  InferenceMode* = enum
+    imTextAction = "text_action", imCandidate = "candidate"
   ActionStatus* = enum
     asAccepted, asRejected, asFallback, asMissing
   EpisodeStatus* = enum
@@ -19,27 +21,38 @@ type
     attemptId*, policy*: string
     model*: Option[string]
     origin*: AttemptOrigin
+    inferenceMode*: InferenceMode
     prompt*, request*, response*, rawResponse*, parsedAction*, decoder*: JsonNode
     accepted*: bool
     platformCallId*, rejectionReason*, modelIdentity*, tokenizerIdentity*: Option[string]
     chatTemplateSha256*, stopReason*: Option[string]
+    responseHeaders*: Option[Table[string, string]]
+    providerRequestId*, responseBodyB64*, responseHeadersB64*: Option[string]
+    responseComplete*, responseReaderJoined*: Option[bool]
+    httpStatus*: Option[int]
     latencyMs*: Option[float]
     inputTokens*, outputTokens*: Option[int]
     promptTokenIds*, sampledTokenIds*: Option[seq[int]]
     behaviorLogprobs*: Option[seq[float]]
+  ControlEncoding* = enum
+    ceI8I8I8U8 = "i8-i8-i8-u8", ceU8 = "u8"
   ExecutionEvidence* = object
+    controlEncoding*: ControlEncoding
     startTick*, endTick*, tickHz*: int
     seatControlsBase64*: string
   DecisionTrajectory* = ref object
     episodeId, seedFamily, game, gameVersion, sourceRevision: string
+    imageDigest: Option[string]
     decisions: seq[JsonNode]
     summary: JsonNode
     finished: bool
 
 proc newDecisionAttempt*(attemptId, policy: string,
-    origin: AttemptOrigin): DecisionAttempt =
+    origin: AttemptOrigin, inferenceMode: InferenceMode = imTextAction): DecisionAttempt =
+  ## Structured game decisions use text_action; candidate adapters opt in explicitly.
   ## Every nullable JSON value has a JSON null, never an uninitialized pointer.
   DecisionAttempt(attemptId: attemptId, policy: policy, origin: origin,
+    inferenceMode: inferenceMode,
     prompt: newJNull(), request: newJNull(), response: newJNull(),
     rawResponse: newJNull(), parsedAction: newJNull(), decoder: newJNull())
 
@@ -53,12 +66,19 @@ proc jsonOption[T](value: Option[T]): JsonNode =
   if value.isSome: %value.get() else: newJNull()
 
 proc attemptEvidenceJson*(attempt: DecisionAttempt): JsonNode =
-  ## Private authenticated player-to-game evidence. Engine acceptance is excluded.
+  ## Private player evidence excludes engine-owned acceptance and inference mode.
   %*{
     "attempt_id": attempt.attemptId, "policy": attempt.policy,
     "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
     "prompt": attempt.prompt, "request": attempt.request,
     "response": attempt.response, "raw_response": attempt.rawResponse,
+    "response_headers": jsonOption(attempt.responseHeaders),
+    "provider_request_id": jsonOption(attempt.providerRequestId),
+    "response_body_b64": jsonOption(attempt.responseBodyB64),
+    "response_headers_b64": jsonOption(attempt.responseHeadersB64),
+    "response_complete": jsonOption(attempt.responseComplete),
+    "response_reader_joined": jsonOption(attempt.responseReaderJoined),
+    "http_status": jsonOption(attempt.httpStatus),
     "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
     "rejection_reason": jsonOption(attempt.rejectionReason),
     "model_identity": jsonOption(attempt.modelIdentity),
@@ -76,6 +96,9 @@ proc evidenceValue[T](payload: JsonNode, key: string, _: typedesc[T]): T =
   when T is string:
     if value.kind != JString: raise newException(ValueError, key & " must be a string")
     result = value.getStr()
+  elif T is bool:
+    if value.kind != JBool: raise newException(ValueError, key & " must be a boolean")
+    result = value.getBool()
   elif T is int:
     if value.kind != JInt: raise newException(ValueError, key & " must be an integer")
     result = value.getInt()
@@ -96,8 +119,10 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   if payload.kind != JObject:
     raise newException(ValueError, "private attempt evidence must be an object")
   let expected = attemptEvidenceJson(newDecisionAttempt("schema", "schema", aoUnknown))
+  const optionalTransport = ["response_body_b64", "response_headers_b64", "response_complete", "http_status", "response_reader_joined"]
   for key in expected.keys:
-    if not payload.hasKey(key): raise newException(ValueError, "missing attempt field: " & key)
+    if not payload.hasKey(key) and key notin optionalTransport:
+      raise newException(ValueError, "missing attempt field: " & key)
   for key in payload.keys:
     if not expected.hasKey(key): raise newException(ValueError, "unexpected player-owned field: " & key)
   result = newDecisionAttempt(evidenceValue(payload, "attempt_id", string),
@@ -116,6 +141,39 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
   result.request = copy(payload["request"])
   result.response = copy(payload["response"])
   result.rawResponse = copy(payload["raw_response"])
+  if payload["response_headers"].kind != JNull:
+    if payload["response_headers"].kind != JObject:
+      raise newException(ValueError, "response_headers must be an object")
+    var headers = initTable[string, string]()
+    for name, value in payload["response_headers"]:
+      if value.kind != JString:
+        raise newException(ValueError, "response header values must be strings")
+      headers[name] = value.getStr()
+    result.responseHeaders = some(headers)
+  result.providerRequestId = evidenceOption(payload, "provider_request_id", string)
+  if payload.hasKey("response_body_b64"):
+    result.responseBodyB64 = evidenceOption(payload, "response_body_b64", string)
+    if result.responseBodyB64.isSome:
+      let bytes = result.responseBodyB64.get()
+      let decoded = decode(bytes)
+      if encode(decoded) != bytes:
+        raise newException(ValueError, "response_body_b64 must be canonical base64")
+      if result.rawResponse.kind == JString and result.rawResponse.getStr() != decoded:
+        raise newException(ValueError, "raw_response differs from received response_body_b64")
+  if payload.hasKey("response_headers_b64"):
+    result.responseHeadersB64 = evidenceOption(payload, "response_headers_b64", string)
+    if result.responseHeadersB64.isSome:
+      let bytes = result.responseHeadersB64.get()
+      if encode(decode(bytes)) != bytes:
+        raise newException(ValueError, "response_headers_b64 must be canonical base64")
+  if payload.hasKey("response_complete"):
+    result.responseComplete = evidenceOption(payload, "response_complete", bool)
+  if payload.hasKey("response_reader_joined"):
+    result.responseReaderJoined = evidenceOption(payload, "response_reader_joined", bool)
+  if payload.hasKey("http_status"):
+    result.httpStatus = evidenceOption(payload, "http_status", int)
+    if result.httpStatus.isSome and result.httpStatus.get() notin 100 .. 599:
+      raise newException(ValueError, "http_status must be a received HTTP status")
   result.decoder = copy(payload["decoder"])
   result.model = evidenceOption(payload, "model", string)
   result.platformCallId = evidenceOption(payload, "platform_call_id", string)
@@ -146,11 +204,21 @@ proc readAttemptEvidence*(payload: JsonNode): DecisionAttempt =
 
 proc newDecisionTrajectory*(episodeId, seedFamily, game, gameVersion,
     sourceRevision: string): DecisionTrajectory =
-  for value in [episodeId, seedFamily, game, gameVersion, sourceRevision]:
+  let runtimeGame = getEnv("COWORLD_GAME_NAME", game)
+  for value in [episodeId, seedFamily, runtimeGame, gameVersion, sourceRevision]:
     if value.len == 0:
       raise newException(ValueError, "trajectory identity and source/version pins are required")
-  DecisionTrajectory(episodeId: episodeId, seedFamily: seedFamily, game: game,
-    gameVersion: gameVersion, sourceRevision: sourceRevision)
+  var imageDigest = none(string)
+  if existsEnv("COWORLD_GAME_IMAGE_DIGEST"):
+    let digest = getEnv("COWORLD_GAME_IMAGE_DIGEST")
+    if digest.len != 71 or not digest.startsWith("sha256:"):
+      raise newException(ValueError, "runtime engine image must be an immutable SHA256 digest")
+    for character in digest[7 .. ^1]:
+      if character notin {'0'..'9', 'a'..'f'}:
+        raise newException(ValueError, "runtime engine image must be an immutable SHA256 digest")
+    imageDigest = some(digest)
+  DecisionTrajectory(episodeId: episodeId, seedFamily: seedFamily, game: runtimeGame,
+    gameVersion: gameVersion, sourceRevision: sourceRevision, imageDigest: imageDigest)
 
 proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
     observation: JsonNode, attempts: seq[DecisionAttempt],
@@ -181,9 +249,17 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
         raise newException(ValueError, "selected proposal differs from executed action")
     encoded.add(%*{
       "attempt_id": attempt.attemptId, "policy": attempt.policy,
+      "inference_mode": $attempt.inferenceMode,
       "origin": originName(attempt.origin), "model": jsonOption(attempt.model),
       "prompt": attempt.prompt, "request": attempt.request,
       "response": attempt.response, "raw_response": attempt.rawResponse,
+      "response_headers": jsonOption(attempt.responseHeaders),
+      "provider_request_id": jsonOption(attempt.providerRequestId),
+      "response_body_b64": jsonOption(attempt.responseBodyB64),
+      "response_headers_b64": jsonOption(attempt.responseHeadersB64),
+      "response_complete": jsonOption(attempt.responseComplete),
+      "response_reader_joined": jsonOption(attempt.responseReaderJoined),
+      "http_status": jsonOption(attempt.httpStatus),
       "parsed_action": attempt.parsedAction, "accepted": attempt.accepted,
       "decoder": attempt.decoder, "platform_call_id": jsonOption(attempt.platformCallId),
       "rejection_reason": jsonOption(attempt.rejectionReason),
@@ -205,18 +281,25 @@ proc recordDecision*(trajectory: DecisionTrajectory, decisionId, seat: string,
   var encodedExecution = newJNull()
   if execution.isSome:
     let physical = execution.get()
+    let controls = decode(physical.seatControlsBase64)
+    let stride = case physical.controlEncoding
+      of ceI8I8I8U8: 4
+      of ceU8: 1
     if physical.startTick < 0 or physical.endTick <= physical.startTick or
         physical.tickHz <= 0 or
-        decode(physical.seatControlsBase64).len != (physical.endTick - physical.startTick) * 4:
-      raise newException(ValueError, "execution needs four control bytes per tick and a positive tick rate")
+        controls.len != (physical.endTick - physical.startTick) * stride or
+        encode(controls) != physical.seatControlsBase64:
+      raise newException(ValueError,
+        "execution requires canonical base64, exact encoding stride and positive tick rate")
     encodedExecution = %*{"start_tick": physical.startTick, "end_tick": physical.endTick,
-      "tick_hz": physical.tickHz, "control_encoding": "i8-i8-i8-u8",
+      "tick_hz": physical.tickHz, "control_encoding": $physical.controlEncoding,
       "seat_controls_b64": physical.seatControlsBase64}
   trajectory.decisions.add(copy(%*{
     "schema_version": "1", "event_type": "decision",
     "episode_id": trajectory.episodeId, "decision_id": decisionId,
     "decision_index": trajectory.decisions.len, "game": trajectory.game,
     "game_version": trajectory.gameVersion, "source_revision": trajectory.sourceRevision,
+    "image_digest": jsonOption(trajectory.imageDigest),
     "seat": seat, "visibility": "private", "observation": observation,
     "prompt": selectedPrompt,
     "attempts": encoded, "selected_attempt_id": jsonOption(selectedAttemptId),
@@ -234,12 +317,14 @@ proc finish*(trajectory: DecisionTrajectory, status: EpisodeStatus,
     "episode_id": trajectory.episodeId, "seed_family": trajectory.seedFamily,
     "game": trajectory.game, "game_version": trajectory.gameVersion,
     "source_revision": trajectory.sourceRevision,
+    "image_digest": jsonOption(trajectory.imageDigest),
     "status": ["completed", "truncated", "failed"][ord(status)],
     "outcome": outcome, "participant_outcomes": participantOutcomes
   })
   trajectory.finished = true
 
-proc writePrivate(destination, content: string) =
+proc writePrivate*(destination, content: string) =
+  ## Create a private corpus artifact atomically, refusing existing paths.
   let parent = destination.parentDir()
   if parent.len > 0 and not dirExists(parent):
     createDir(parent)

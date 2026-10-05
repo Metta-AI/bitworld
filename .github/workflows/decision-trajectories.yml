@@ -3,9 +3,9 @@ name: Private decision trajectories
 on:
   push:
     branches: [master]
-    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, tests/test_decision_trajectory.nim, .github/workflows/decision-trajectories.yml]
+    paths: [src/bitworld/runtime_input.nim, tests/test_runtime.nim, tests/support/runtime_input_probe.nim, tests/support/runtime_config_input_probe.nim, tests/test_runtime_input.py, tests/test_runtime_input_https.py, tests/test_runtime_config_input.py, src/bitworld/native_websocket.nim, tests/support/native_websocket_probe.nim, tests/test_native_websocket.py, src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, src/bitworld/native_http.nim, src/bitworld/native_stop.nim, src/bitworld/artifact_runtime.nim, tests/test_artifact_http.py, tests/support/artifact_http_probe.nim, tests/test_native_https.py, tests/support/native_https_probe.nim, tests/test_decision_trajectory.nim, tests/test_native_http.py, tests/support/native_http_probe.nim, tests/support/native_request_control_probe.nim, tests/test_native_request_control.py, .github/workflows/decision-trajectories.yml]
   pull_request:
-    paths: [src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, tests/test_decision_trajectory.nim, .github/workflows/decision-trajectories.yml]
+    paths: [src/bitworld/runtime_input.nim, tests/test_runtime.nim, tests/support/runtime_input_probe.nim, tests/support/runtime_config_input_probe.nim, tests/test_runtime_input.py, tests/test_runtime_input_https.py, tests/test_runtime_config_input.py, src/bitworld/native_websocket.nim, tests/support/native_websocket_probe.nim, tests/test_native_websocket.py, src/bitworld/decision_trajectory.nim, src/bitworld/runtime.nim, src/bitworld/native_http.nim, src/bitworld/native_stop.nim, src/bitworld/artifact_runtime.nim, tests/test_artifact_http.py, tests/support/artifact_http_probe.nim, tests/test_native_https.py, tests/support/native_https_probe.nim, tests/test_decision_trajectory.nim, tests/test_native_http.py, tests/support/native_http_probe.nim, tests/support/native_request_control_probe.nim, tests/test_native_request_control.py, .github/workflows/decision-trajectories.yml]
 
 jobs:
   test:
@@ -29,5 +29,35 @@ jobs:
               echo "--path:\"$pkg\"" >> nim.cfg
             fi
           done
+      - name: Install native HTTP development headers
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - name: Verify private complete-episode and attribution contracts
         run: nim c -r --path:src -o:/tmp/test-decision-trajectory tests/test_decision_trajectory.nim
+      - name: Verify owned native HTTP deadlines, partial bytes, and signal interruption
+        run: |
+          nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/native-http-probe tests/support/native_http_probe.nim
+          python3 tests/test_native_http.py /tmp/native-http-probe
+      - name: Verify request-local cancellation and later phase admission
+        run: |
+          nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/native-request-control-probe tests/support/native_request_control_probe.nim
+          python3 tests/test_native_request_control.py /tmp/native-request-control-probe
+      - name: Verify bounded private artifact finalization after inference interruption
+        run: |
+          nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/artifact-http-probe tests/support/artifact_http_probe.nim
+          python3 tests/test_artifact_http.py /tmp/artifact-http-probe
+      - name: Verify configured HTTPS trust and hostname validation
+        run: |
+          nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/native-https-probe tests/support/native_https_probe.nim
+          python3 tests/test_native_https.py /tmp/native-https-probe
+      - name: Verify buffered WebSocket deadlines, partial sends, signals, and verified TLS
+        run: |
+          nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/native-websocket-probe tests/support/native_websocket_probe.nim
+          python3 tests/test_native_websocket.py /tmp/native-websocket-probe
+      - name: Verify bounded startup inputs and private capture before validation
+        run: |
+          nim c -r --parallelBuild:1 --threads:on --mm:orc --path:src -o:/tmp/test-runtime tests/test_runtime.nim
+          nim c --parallelBuild:1 -d:release --threads:on --mm:orc --path:src -o:/tmp/runtime-input-probe tests/support/runtime_input_probe.nim
+          python3 tests/test_runtime_input.py /tmp/runtime-input-probe
+          python3 tests/test_runtime_input_https.py /tmp/runtime-input-probe
+          nim c --parallelBuild:1 -d:release --threads:on --mm:orc --path:src -o:/tmp/runtime-config-input-probe tests/support/runtime_config_input_probe.nim
+          python3 tests/test_runtime_config_input.py /tmp/runtime-config-input-probe

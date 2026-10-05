@@ -1,6 +1,13 @@
 import
-  std/[os, strutils],
-  bitworld/runtime
+  std/[os, strutils, monotimes, times],
+  bitworld/[runtime, runtime_input, native_http]
+
+var inputControl: NativeRequestControl
+var captures: seq[RuntimeInputCapture]
+let inputDeadline = getMonoTime() + initDuration(seconds = 10)
+proc readInput(value, source: string): string =
+  readRuntimeInput(value, source, inputDeadline, inputControl, 16 * 1024 * 1024,
+    64 * 1024, captures)
 
 let workspace = getTempDir() / ("bitworld-cogame-runtime-" & $getCurrentProcessId())
 if dirExists(workspace):
@@ -12,7 +19,8 @@ let configPath = workspace / "config.json"
 writeFile(configPath, """{"config":true}""")
 doAssert readCogameUri(
   "file://" & configPath,
-  CogameConfigUriEnv
+  CogameConfigUriEnv,
+  readInput
 ) == """{"config":true}"""
 
 writeCogameUri(
@@ -53,7 +61,7 @@ putEnv(CogameLoadReplayUriEnv, "file://" & replayPath)
 putEnv(CogameLogUriEnv, "file://" & logPath)
 writeFile(replayPath, "replay-bytes")
 
-let runtimeConfig = readRuntimeConfig()
+let runtimeConfig = readRuntimeConfig(readInput)
 doAssert runtimeConfig.host == "127.0.0.1"
 doAssert runtimeConfig.port == 9001
 doAssert runtimeConfig.config == """{"config":true}"""

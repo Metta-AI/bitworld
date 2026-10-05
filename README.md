@@ -45,6 +45,26 @@ This makes the game world useful as a sandbox for questions like:
 - What incentives cause betrayal?
 - How do agents adapt to repeated social interaction?
 
+## Coworld startup inputs
+
+`readRuntimeConfig`, `readCogameUri`, and `readCogameEnv` require an
+`InputReader`. Native games supply a closure calling
+`runtime_input.readRuntimeInput` with one absolute startup deadline, an owned
+`NativeRequestControl`, body/header byte limits, and private captures. Reserve
+the game's cleanup budget before choosing that deadline.
+
+The reader owns each HTTP(S) handle until it joins. It retains received bytes
+before status, UTF-8, or game configuration validation. Redirects are rejected;
+TLS certificate and hostname verification remain enabled. `SSL_CERT_FILE`
+selects an explicit process trust bundle. File inputs must be regular files
+and obey the same byte limit and deadline.
+
+`runtimeInputCapturesJson` contains private source URIs and raw bytes. Keep it
+in the private checkpoint, never public replay or process logs. Games seal
+failed or interrupted initialization only after input ownership ends, using
+the original bounded cleanup deadline. `pathFromCogameUri` decodes local file
+URIs; it never downloads inputs.
+
 ## Visual Style
 
 Bit World is designed around strict retro display constraints:
@@ -201,6 +221,38 @@ docker build \
   -t bitworld-nottoodumb:latest \
   .
 coworld certify among_them/coworld_manifest.json
+```
+
+## Native Coworld HTTP lifecycle
+
+`bitworld/native_http.performNativePost(url, headers, body, deadline, control)` owns one
+libcurl handle until cleanup. Pass the same absolute `MonoTime` deadline across
+attempts. Each request has an owned `NativeRequestControl`; retain it until every
+worker using it joins. `cancelNativeRequest(control)` stops only that request and
+returns `nhCanceled`. A later decision uses a fresh control without resetting
+the original decision deadline. Global stop remains irreversible.
+It returns exact received header/body bytes, observed status, actual
+transfer completeness, and a typed completion/deadline/interruption/failure kind.
+A complete transfer arriving after the deadline remains ineligible for selection.
+
+Call `bitworld/native_stop.installNativeStopHandlers()` before starting threads.
+SIGTERM and SIGINT only set a lock-free stop flag. Owned cleanup can call
+`requestNativeStop()` to set the same irreversible intent. The engine must stop accepting
+new decisions, join owned work, and seal a truncated private trajectory afterward.
+Provider parsing, identity-header validation, action acceptance, and sealing belong
+to the game. Raw byte fields never belong in public replay frames.
+
+Private attempts store nullable `response_body_b64`, `response_headers_b64`,
+`response_complete`, and `http_status`. Missing transport evidence stays null;
+scripted teachers must not populate serving fields. Base64 retains partial and
+non-UTF8 bodies plus duplicate/interim/trailer headers. Existing normalized header
+maps serve identity lookup; they do not replace the received header bytes.
+
+The real HTTP fixture uses no credentials or provider calls:
+
+```sh
+nim c -d:release --threads:on --mm:orc --path:src -o:/tmp/native-http-probe tests/support/native_http_probe.nim
+python3 tests/test_native_http.py /tmp/native-http-probe
 ```
 
 ## Deploying to ghcr.io
