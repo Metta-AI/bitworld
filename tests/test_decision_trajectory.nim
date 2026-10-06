@@ -286,6 +286,51 @@ suite "private authoritative decision trajectories":
     wire["response_reader_joined"] = %"joined"
     expect ValueError: discard readAttemptEvidence(wire)
 
+  test "game-owned scoring survives original failure and selected action joins":
+    let record = episode()
+    var rejected = newDecisionAttempt("rank-rejected", "policy", aoModel, imCandidate)
+    rejected.actionEvidence = some(%*{"protocol": "fixture.score.v1",
+      "scoring_result": {"kind": "rejected", "fault": "provider_error"}})
+    rejected.rejectionReason = some("original provider failure")
+    var selected = newDecisionAttempt("rank-scored", "policy", aoModel, imCandidate)
+    selected.actionEvidence = some(%*{"protocol": "fixture.score.v1",
+      "scoring_result": {"kind": "scored", "selected_index": 0}})
+    selected.parsedAction = %*{"move": 1}
+    selected.accepted = true
+    record.recordDecision("rank", "0", %*{}, @[rejected, selected],
+      some("rank-scored"), selected.parsedAction, asAccepted)
+    selected.actionEvidence.get()["scoring_result"]["selected_index"] = %9
+    record.finish(esCompleted, %*{}, %*[1])
+    let event = parseJson(record.eventsJsonl().splitLines()[0])
+    check event["attempts"].len == 2
+    check event["attempts"][0]["action_evidence"]["scoring_result"]["kind"].getStr() == "rejected"
+    check event["attempts"][1]["action_evidence"]["scoring_result"]["selected_index"].getInt() == 0
+    check event["attempts"][1]["response"].kind == JNull
+    check event["executed_action"] == event["attempts"][1]["parsed_action"]
+
+  test "scoring cannot acquire generation or sampled token provenance":
+    for fault in ["mode", "text", "tokens", "probabilities"]:
+      var attempt = newDecisionAttempt("rank", "policy", aoModel, imCandidate)
+      attempt.actionEvidence = some(%*{"protocol": "fixture.score.v1"})
+      case fault
+      of "mode": attempt.inferenceMode = imTextAction
+      of "text": attempt.response = %"generated-looking text"
+      of "tokens": attempt.sampledTokenIds = some(@[1])
+      else: attempt.behaviorLogprobs = some(@[-0.1])
+      expect ValueError:
+        episode().recordDecision("rank", "0", %*{}, @[attempt], none(string),
+          %*{"move": 1}, asFallback, fallbackOrigin = some("actual-scripted"))
+
+  test "private players cannot inject game-owned scoring evidence":
+    var attempt = newDecisionAttempt("rank", "policy", aoModel, imCandidate)
+    attempt.actionEvidence = some(%*{"protocol": "fixture.score.v1"})
+    let wire = attempt.attemptEvidenceJson()
+    check not wire.hasKey("action_evidence")
+    wire["action_evidence"] = %*{"protocol": "fixture.score.v1"}
+    expect ValueError:
+      discard readAttemptEvidence(wire)
+
+
   test "u8 execution retains one actual control byte per tick":
     let record = episode()
     let attempt = teacher()
@@ -305,3 +350,43 @@ suite "private authoritative decision trajectories":
         episode().recordDecision("invalid", "0", %*{}, @[attempt],
           some(attempt.attemptId), attempt.parsedAction, asAccepted,
           execution = some(padded))
+
+
+suite "served inference and engine binding":
+  test "request decoder agrees with served limits and preserves private response":
+    var attempt = newDecisionAttempt("a0", "requested-model", aoModel)
+    attempt.captureInferenceRequest(%*{"max_tokens": 32, "temperature": 0}, "system", "private-user")
+    let response = %*{"model": "actual-checkpoint", "stop_reason": "end_turn",
+      "usage": {"input_tokens": 12, "output_tokens": 4},
+      "inference_settings": {"max_output_tokens": 32, "temperature": 0,
+        "timeout_seconds": 45.0, "max_attempts": 9}}
+    attempt.captureInferenceResponse($response, 200, "call", "weights", "tokenizer", "template", 30, 2)
+    check attempt.decoder["timeout_seconds"].getFloat() == 30.0
+    check attempt.decoder["max_attempts"].getInt() == 2
+    check attempt.model.get() == "actual-checkpoint"
+    check attempt.rawResponse == response
+    check attempt.modelIdentity.get() == "weights"
+    let record = episode()
+    record.recordExecutedDecision("d0", "0", "engine-bound-policy", %*{"private": 1},
+      %*{"move": 2}, @[attempt], aoModel)
+    record.finish(esCompleted, %*{}, %*{})
+    let decision = parseJson(record.eventsJsonl().splitLines()[0])
+    check decision["attempts"][0]["policy"].getStr() == "engine-bound-policy"
+    check decision["attempts"][0]["parsed_action"] == decision["executed_action"]
+    var bad = response
+    bad["inference_settings"]["temperature"] = %1
+    expect ValueError:
+      attempt.captureInferenceResponse($bad, 200, "", "", "", "", 30, 2)
+
+  test "an engine fallback cannot select an accepted proposal":
+    var attempt = teacher()
+    attempt.accepted = true
+    let record = episode()
+    record.recordExecutedDecision("d0", "0", "actual-policy", %*{}, %*{"move": 9}, @[attempt], aoFallback)
+    record.finish(esCompleted, %*{}, %*{})
+    let decision = parseJson(record.eventsJsonl().splitLines()[0])
+    check decision["selected_attempt_id"].kind == JNull
+    check not decision["attempts"][0]["accepted"].getBool()
+    check decision["action_status"].getStr() == "fallback"
+
+
