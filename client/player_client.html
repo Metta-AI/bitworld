@@ -17,6 +17,7 @@ input{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(8
 <input id="i" maxlength="48" autocomplete="off" autocapitalize="off" spellcheck="false">
 <div id="s">connecting...</div>
 <script src="snappyjs.min.js"></script>
+<script src="spritecodec.js"></script>
 <script>
 const c=document.getElementById("c"),i=document.getElementById("i"),s=document.getElementById("s"),x=c.getContext("2d");
 const p=[0,0,0,255,194,195,199,255,255,241,232,255,255,0,77,255,255,119,168,255,95,87,79,255,171,82,54,255,255,163,0,255,255,236,39,255,126,37,83,255,0,135,81,255,0,228,54,255,29,43,83,255,131,118,156,255,41,173,255,255,255,204,170,255];
@@ -156,6 +157,13 @@ function parseSprite(bytes){
       const snappy=trySnappySprite(bytes,offset,bytes.length-offset,width,height);
       if(snappy){sprites.set(id,{width,height,pixels:snappy.pixels,label:snappy.label});offset=snappy.offset}
       else{sprites.set(id,{width,height,pixels:rawSprite(bytes,offset,width,height),label:""});offset+=width*height}
+    }else if(type===0x08){
+      const encoded=window.SpriteCodec.readEncodedSprite(bytes,offset,textDecoder);
+      if(!encoded)throw new Error("Truncated encoded sprite");
+      const decoded=window.SpriteCodec.decodeSprite(encoded.encoding,encoded.payload,encoded.width,encoded.height,sourceId=>sprites.get(sourceId));
+      if(decoded.pixels.length!==encoded.width*encoded.height*4)throw new Error("Bad sprite pixel length");
+      sprites.set(encoded.id,{width:encoded.width,height:encoded.height,pixels:decoded.pixels,indices:decoded.indices,palette:decoded.palette,label:encoded.label});
+      offset=encoded.offset
     }else if(type===0x02){
       const id=readU16(bytes,offset),ox=readI16(bytes,offset+2),oy=readI16(bytes,offset+4),z=readI16(bytes,offset+6),layer=bytes[offset+8],spriteId=readU16(bytes,offset+9);
       objects.set(id,{id,x:ox,y:oy,z,layer,spriteId});offset+=11

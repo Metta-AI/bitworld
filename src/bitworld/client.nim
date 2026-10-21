@@ -18,9 +18,11 @@ const
   RewardClientHtmlRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/snappyjs.min.js"
   QrcodeClientRoute* = "/qrcode.min.js"
+  SpriteCodecClientRoute* = "/spritecodec.js"
   ReplayClientRoute* = "/client/replay"
   SnappyClientPath* = "/client/snappyjs.min.js"
   QrcodeClientPath* = "/client/qrcode.min.js"
+  SpriteCodecClientPath* = "/client/spritecodec.js"
   CoworldPlayerClientRoute* = "/clients/player"
   CoworldGlobalClientRoute* = "/clients/global"
   CoworldReplayClientRoute* = "/clients/replay"
@@ -28,18 +30,21 @@ const
   CoworldRewardClientRoute* = "/clients/rewards"
   CoworldSnappyClientRoute* = "/clients/snappyjs.min.js"
   CoworldQrcodeClientRoute* = "/clients/qrcode.min.js"
+  CoworldSpriteCodecClientRoute* = "/clients/spritecodec.js"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   AdminClientHtml* = "admin_client.html"
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"
   QrcodeClientJs* = "qrcode.min.js"
+  SpriteCodecClientJs* = "spritecodec.js"
   EmbeddedPlayerClientHtml* = staticRead("../../client/player_client.html")
   EmbeddedGlobalClientHtml* = staticRead("../../client/global_client.html")
   EmbeddedAdminClientHtml* = staticRead("../../client/admin_client.html")
   EmbeddedRewardClientHtml* = staticRead("../../client/reward_client.html")
   EmbeddedSnappyClientJs* = staticRead("../../client/snappyjs.min.js")
   EmbeddedQrcodeClientJs* = staticRead("../../client/qrcode.min.js")
+  EmbeddedSpriteCodecClientJs* = staticRead("../../client/spritecodec.js")
 
 proc repoDir*(): string =
   ## Returns the Bit World repository directory.
@@ -86,6 +91,8 @@ proc clientRoute*(route: string, playerRoute = PlayerClientRoute): string =
     SnappyClientRoute
   of QrcodeClientPath, CoworldQrcodeClientRoute:
     QrcodeClientRoute
+  of SpriteCodecClientPath, CoworldSpriteCodecClientRoute:
+    SpriteCodecClientRoute
   else:
     route
 
@@ -114,6 +121,8 @@ proc clientStaticPath*(route: string, playerRoute = PlayerClientRoute): string =
     clientDir() / SnappyClientJs
   of QrcodeClientRoute:
     clientDir() / QrcodeClientJs
+  of SpriteCodecClientRoute:
+    clientDir() / SpriteCodecClientJs
   else:
     clientHtmlPath(route, playerRoute)
 
@@ -123,7 +132,7 @@ proc clientStaticContentType*(
 ): string =
   ## Returns the content type for a served static client file.
   case clientRoute(route, playerRoute)
-  of SnappyClientRoute, QrcodeClientRoute:
+  of SnappyClientRoute, QrcodeClientRoute, SpriteCodecClientRoute:
     "application/javascript; charset=utf-8"
   else:
     "text/html; charset=utf-8"
@@ -146,6 +155,8 @@ proc clientStaticBody*(
     EmbeddedSnappyClientJs
   of QrcodeClientRoute:
     EmbeddedQrcodeClientJs
+  of SpriteCodecClientRoute:
+    EmbeddedSpriteCodecClientJs
   else:
     ""
 
