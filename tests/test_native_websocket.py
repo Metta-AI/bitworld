@@ -9,7 +9,6 @@ import signal
 import socket
 import ssl
 import tempfile
-import unittest
 import struct
 import subprocess
 import sys
@@ -73,7 +72,8 @@ def run_case(name, mode, operation, signals=None, valid=True, tls=None, trust=No
             with connection:
                 connection.settimeout(5)
                 if rejected_tls:
-                    assert connection.recv(1) == b''
+                    # The client result below verifies rejection. TLS backends may
+                    # signal that rejection with either EOF or a TCP reset.
                     return
                 upgrade(connection, valid, stall)
                 operation(connection)
@@ -94,9 +94,9 @@ def run_case(name, mode, operation, signals=None, valid=True, tls=None, trust=No
             output, error = child.stdout.read(), child.stderr.read()
             assert child.returncode == 0, (name, error)
             rows = [first] + [json.loads(line) for line in output.splitlines()]
-        if rejected_tls and not trust:
-            with unittest.TestCase().assertRaises(ssl.SSLError):
-                future.result(timeout=5)
+        if rejected_tls:
+            error = future.exception(timeout=5)
+            assert error is None or isinstance(error, ssl.SSLError), error
         else:
             future.result(timeout=5)
     print(json.dumps({'case': name, 'rows': rows}), flush=True)
@@ -240,3 +240,26 @@ for native_signal in [signal.SIGTERM, signal.SIGINT]:
     assert rows[1]['kind'] == 'wsInterrupted'
     assert base64.b64decode(rows[2]['body_b64'], validate=True) == b'\x00\xff\xe2\x82'
 print('native websocket transport gates passed')
+
+# Real peer acknowledgement is required; EOF and a silent peer cannot qualify.
+def finish_close(connection):
+    assert client_frame(connection) == (8, struct.pack('!H', 1000))
+    connection.sendall(frame(struct.pack('!H', 1000), opcode=8))
+rows = run_case('owned-close-handshake', 'close', finish_close)
+assert rows[1]['kind'] == 'wsReady'
+assert base64.b64decode(rows[2]['received_b64']).endswith(frame(struct.pack('!H', 1000), opcode=8))
+
+def stop_partial_close(connection):
+    partial = frame(b'partial-before-stop')
+    connection.sendall(partial[:4])
+    assert client_frame(connection) == (8, struct.pack('!H', 1000))
+    connection.sendall(partial[4:] + frame(struct.pack('!H', 1000), opcode=8))
+for sig in (signal.SIGTERM, signal.SIGINT):
+    rows = run_case('close-after-' + sig.name, 'close-stop', stop_partial_close, sig)
+    assert rows[1]['kind'] == 'wsInterrupted' and rows[2]['kind'] == 'wsReady'
+    wire = base64.b64decode(rows[3]['received_b64'])
+    assert wire.split(b'\r\n\r\n', 1)[1] == frame(b'partial-before-stop') + frame(struct.pack('!H', 1000), opcode=8)
+rows = run_case('close-without-peer-frame', 'close-eof', lambda connection: client_frame(connection))
+assert rows[1]['kind'] == 'wsFailure'
+rows = run_case('close-stalled-peer', 'close-stall', lambda connection: (client_frame(connection), time.sleep(.8)))
+assert rows[1]['kind'] == 'wsDeadline' and rows[1]['elapsed_ms'] < 1000

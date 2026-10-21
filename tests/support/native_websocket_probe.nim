@@ -12,16 +12,24 @@ proc main() =
   installNativeStopHandlers()
   let mode = paramStr(2)
   let started = getMonoTime()
-  let connected = connectNativeWebSocket(paramStr(1), started + initDuration(milliseconds = 600), 16 * 1024 * 1024)
+  var observed = ""
+  let observer: ReceiveObserver = proc(data: string) = observed.add(data)
+  let connected = connectNativeWebSocket(paramStr(1), started + initDuration(milliseconds = 600), 16 * 1024 * 1024, some(observer))
   echo $(%*{"connect": $connected.kind, "error": connected.error, "curl_version": $libcurl.version(),
     "elapsed_ms": (getMonoTime() - started).inMilliseconds})
   if connected.kind != wsReady: quit(0)
   let socket = connected.socket
-  defer: closeNativeWebSocket(socket)
+  defer:
+    if mode notin ["close", "close-stop", "close-eof", "close-stall"]: closeNativeWebSocket(socket)
   proc report(value: WebSocketResult) =
     echo $(%*{"kind": $value.kind, "data": value.data,
       "elapsed_ms": (getMonoTime() - started).inMilliseconds})
-  if mode == "mixed-binary":
+  if mode in ["close", "close-stop", "close-eof", "close-stall"]:
+    if mode == "close-stop":
+      report(socket.receiveNativeMessage(getMonoTime() + initDuration(seconds = 5)))
+    report(socket.finishNativeWebSocket(getMonoTime() + initDuration(milliseconds = 600)))
+    echo $(%*{"received_b64": encode(observed)})
+  elif mode == "mixed-binary":
     let deadline = getMonoTime() + initDuration(milliseconds = 600)
     for index in 0 ..< 3:
       let received = socket.receiveNativeMessage(deadline)
