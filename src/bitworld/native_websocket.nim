@@ -19,6 +19,7 @@ type
     ipPlayer, ipCleanup
   PongState = enum
     psNone, psWaiting, psQueued, psSent
+  ReceiveObserver* = proc(data: string) {.closure.}
   NativeWebSocket* = ref object
     handle: PCurl
     socket: cint
@@ -31,7 +32,9 @@ type
     pongState: Atomic[PongState]
     pongData: string
     maximum: int
-    closed: bool
+    closed, peerClosed: bool
+    received: Option[ReceiveObserver]
+    closePayload: string
   WebSocketConnection* = object
     kind*: WebSocketKind
     socket*: NativeWebSocket
@@ -115,6 +118,10 @@ proc receiveBytes(ws: NativeWebSocket, deadline: MonoTime,
     release(ws.ioLock)
     if code == 0:
       if count == 0: return WebSocketResult(kind: wsClosed)
+      if ws.received.isSome:
+        var bytes = newString(int(count))
+        copyMem(bytes[0].addr, buffer.addr, int(count))
+        ws.received.get()(bytes)
       let offset = ws.incoming.len
       ws.incoming.setLen(offset + int(count))
       copyMem(ws.incoming[offset].addr, buffer.addr, int(count))
@@ -262,6 +269,8 @@ proc receiveMessage(ws: NativeWebSocket, deadline: MonoTime,
           if code < 1000 or code >= 5000 or code in [1004, 1005, 1006, 1015] or
               (code >= 1016 and code < 3000) or validateUtf8(payload[2 .. ^1]) != -1:
             return WebSocketResult(kind: wsFailure, error: "Invalid WebSocket close reason")
+        ws.closePayload = payload
+        ws.peerClosed = true
         return WebSocketResult(kind: wsClosed)
       of 9:
         ws.pongData = payload
@@ -307,8 +316,30 @@ proc closeNativeWebSocket*(ws: NativeWebSocket) =
   deinitLock(ws.ioLock)
   deinitLock(ws.sendLock)
 
+proc finishNativeWebSocket*(ws: NativeWebSocket, deadline: MonoTime): WebSocketResult =
+  ## Call after joining all IO owners. Complete the close handshake within the
+  ## caller's existing cleanup deadline, then release the socket on every path.
+  try:
+    let payload = if ws.peerClosed: ws.closePayload else: "\x03\xe8"
+    result = ws.sendFrame(8, payload, deadline, ipCleanup)
+    if result.kind != wsReady: return
+    if ws.peerClosed: return
+    while true:
+      result = ws.receiveMessage(deadline, ipCleanup, true)
+      case result.kind
+      of wsMessage: discard
+      of wsClosed:
+        return WebSocketResult(kind: (if ws.peerClosed: wsReady else: wsFailure),
+          error: (if ws.peerClosed: "" else: "Peer ended without a WebSocket close frame"))
+      else: return
+  finally:
+    ws.closeNativeWebSocket()
+
 proc connectNativeWebSocket*(url: string, deadline: MonoTime,
-    maxMessageBytes: Positive): WebSocketConnection =
+    maxMessageBytes: Positive,
+    received: Option[ReceiveObserver] = none(ReceiveObserver)): WebSocketConnection =
+  ## The receive owner invokes the observer before buffering each raw chunk,
+  ## including upgrade bytes and incomplete frames. Observers must not reenter IO.
   if interruptionRequested(): return WebSocketConnection(kind: wsInterrupted)
   if getMonoTime() >= deadline: return WebSocketConnection(kind: wsDeadline)
   let parsed = parseUri(url)
@@ -318,7 +349,7 @@ proc connectNativeWebSocket*(url: string, deadline: MonoTime,
     return WebSocketConnection(kind: wsFailure, error: "Invalid native WebSocket URL")
   var transport = parsed
   transport.scheme = if parsed.scheme == "wss": "https" else: "http"
-  let ws = NativeWebSocket(handle: easy_init(), maximum: maxMessageBytes)
+  let ws = NativeWebSocket(handle: easy_init(), maximum: maxMessageBytes, received: received)
   doAssert ws.handle != nil
   initLock(ws.ioLock)
   initLock(ws.sendLock)
